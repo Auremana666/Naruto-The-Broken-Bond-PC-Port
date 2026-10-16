@@ -1,0 +1,25 @@
+# Imagens, executaveis e arquivos locais do jogo
+*.iso
+*.7z
+*.rar
+*.zip
+*.xex
+*.xexp
+/Vimm's Lair.txt
+/game/
+/extracted/
+
+# Codigo gerado e resultados de compilacao
+/generated/
+/build/
+/build-*/
+/out/
+/CMakeUserPresets.json
+*.log
+
+# Arquivos locais de ferramentas
+/.vs/
+/.idea/
+/.vscode/
+Thumbs.db
+.DS_Store
