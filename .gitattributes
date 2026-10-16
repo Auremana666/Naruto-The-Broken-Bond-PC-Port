@@ -9,6 +9,7 @@
 # Unified patches contain space-prefixed empty context lines.
 *.patch text eol=lf whitespace=-blank-at-eol
 CMakeLists.txt text eol=lf
+LICENSE text eol=lf
 .gitattributes text eol=lf
 .gitignore text eol=lf
 .gitmodules text eol=lf

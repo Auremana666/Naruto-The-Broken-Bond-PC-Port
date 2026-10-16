@@ -64,3 +64,10 @@ Keyboard defaults include Enter for Start, Space for A, Backspace for B, and WAS
 - `main` is the primary branch; `develop` is the working branch.
 - `sdk/` is the official ReXGlue submodule at the repository root.
 - All code, identifiers, comments, documentation, commit messages, and descriptions must be in English, as required by [AGENTS.md](AGENTS.md).
+
+## License
+
+Original project code and documentation are licensed under the [MIT License](LICENSE).
+ReXGlue and its dependencies retain their own licenses, including the
+[SDK license](sdk/LICENSE). The project license does not cover the original
+game executable, assets, or code translated from the game.
