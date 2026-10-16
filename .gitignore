@@ -1,4 +1,4 @@
-# Imagens, executaveis e arquivos locais do jogo
+# Local game images, executables, and assets
 *.iso
 *.7z
 *.rar
@@ -9,7 +9,7 @@
 /game/
 /extracted/
 
-# Codigo gerado e resultados de compilacao
+# Generated code and build output
 /generated/
 /build/
 /build-*/
@@ -17,7 +17,7 @@
 /CMakeUserPresets.json
 *.log
 
-# Arquivos locais de ferramentas
+# Local tool settings
 /.vs/
 /.idea/
 /.vscode/

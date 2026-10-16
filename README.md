@@ -1,33 +1,37 @@
 # Naruto: The Broken Bond Recomp
 
-Projeto de recompilação estática da versão Xbox 360 de **Naruto: The Broken Bond**, usando o [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
+Static recompilation project for the Xbox 360 version of **Naruto: The Broken Bond**, using the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
 
-## Estado atual
+## Current status
 
-Repositório inicializado. Ainda não há código do jogo recompilado, configuração específica do executável ou build executável validado.
+The repository has been initialized. There is no recompiled game code, executable-specific configuration, or validated runnable build yet.
 
-- `main`: ponto inicial vazio do projeto.
-- `develop`: branch de trabalho para a recompilação.
-- `third_party/rexglue`: SDK oficial como submódulo, fixado pelo Git em uma revisão específica.
+- `main`: empty starting point for the project.
+- `develop`: working branch for recompilation.
+- `sdk`: official ReXGlue SDK submodule, pinned to a specific Git revision.
 
-## Preparação
+## Setup
 
-Depois de clonar este repositório:
+After cloning this repository:
 
 ```sh
 git switch develop
 git submodule update --init --recursive
 ```
 
-As imagens e os arquivos extraídos do jogo ficam apenas no ambiente local. Use `game/` para o conteúdo extraído; imagens, arquivos compactados, executáveis XEX, código em `generated/` e builds em `build/` estão ignorados pelo Git.
+Game images and extracted assets remain local. Use `game/` for extracted content. Git ignores disc images, archives, XEX executables, code under `generated/`, and builds under `build/`.
 
-## Foco inicial
+## Initial scope
 
-O objetivo é fazer o jogo funcionar a partir da recompilação. Launcher e desenvolvimento de renderer próprio ficam fora desta etapa.
+The goal is to get the recompiled game running. Launcher development and custom renderer work are outside this phase.
 
-1. Extrair e identificar o executável do jogo e sua revisão.
-2. Preparar a ferramenta ReXGlue e a configuração de recompilação para esse executável.
-3. Gerar e compilar o código traduzido com o runtime do SDK.
-4. Validar a inicialização e corrigir os problemas necessários para chegar ao gameplay.
+1. Extract and identify the game executable and its revision.
+2. Prepare the ReXGlue tool and recompilation configuration for that executable.
+3. Generate and compile the translated code with the SDK runtime.
+4. Validate startup and resolve issues required to reach gameplay.
 
-As configurações e os comandos específicos de build serão adicionados conforme forem verificados contra o SDK e o executável local.
+Build configuration and commands will be added as they are verified against the SDK and the local executable.
+
+## Project language
+
+All code, comments, documentation, and descriptions must be written in English. This also applies to commit messages and pull request titles and descriptions.
