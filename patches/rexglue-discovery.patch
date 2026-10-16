@@ -1,0 +1,365 @@
+diff --git a/src/codegen/phase_discover.cpp b/src/codegen/phase_discover.cpp
+index 1c73548..275f7cd 100644
+--- a/src/codegen/phase_discover.cpp
++++ b/src/codegen/phase_discover.cpp
+@@ -13,8 +13,10 @@
+ #include "decoded_binary.h"
+ #include <rex/codegen/function_scanner.h>
+ 
++#include <algorithm>
+ #include <array>
+ #include <bitset>
++#include <iterator>
+ #include <unordered_set>
+ 
+ #include <rex/codegen/phases.h>
+@@ -190,6 +192,107 @@ void discoverFunction(CodegenContext& ctx, uint32_t funcAddr,
+   }
+ }
+ 
++size_t discoverFunctionPointerTables(CodegenContext& ctx) {
++  auto& graph = ctx.graph;
++  auto& decoded = ctx.decoded();
++  const auto& binary = ctx.binary();
++  const auto* rdata = binary.findSectionByName(".rdata");
++  if (!rdata || !rdata->data || rdata->executable)
++    return 0;
++
++  // RTTI is optional. Require a run of code pointers anchored by two distinct
++  // already-discovered functions before considering its remaining entries.
++  // Snapshot the anchors so speculative discoveries cannot validate later runs.
++  std::unordered_set<uint32_t> anchors;
++  std::vector<CodeRegion> claimed;
++  // Exception scope tables also contain runs of code pointers. Inline handlers
++  // may not be reachable during initial discovery, but their declared owner
++  // still reserves the entire PDATA/config extent, including those gaps.
++  for (const auto& [addr, size] : ctx.scan.pdataSizes)
++    claimed.push_back({addr, addr + size});
++  for (const auto& [addr, config] : ctx.Config().functions) {
++    if (uint32_t size = config.getSize(addr); size != 0)
++      claimed.push_back({addr, addr + size});
++  }
++  for (const auto& [addr, node] : graph.functions()) {
++    if (!node->isImport() && !node->canDiscover())
++      anchors.insert(addr);
++    if (node->blocks().empty()) {
++      claimed.push_back({addr, addr + node->size()});
++    } else {
++      for (const auto& block : node->blocks())
++        claimed.push_back({block.base, block.base + block.size});
++    }
++  }
++  // A function can own out-of-line blocks beyond later function entries.
++  // Index all claimed blocks, not just the nearest preceding function.
++  std::sort(claimed.begin(), claimed.end(),
++            [](const auto& a, const auto& b) { return a.start < b.start; });
++  std::vector<CodeRegion> coverage;
++  for (const auto& block : claimed) {
++    if (!coverage.empty() && block.start <= coverage.back().end)
++      coverage.back().end = std::max(coverage.back().end, block.end);
++    else
++      coverage.push_back(block);
++  }
++
++  auto isCodePointer = [&](uint32_t address) {
++    return (address & 3) == 0 && binary.isExecutable(address) &&
++           !binary.isInImportExportRange(address);
++  };
++  auto isUnclaimedEntry = [&](uint32_t address) {
++    if (graph.isEntryPoint(address))
++      return false;
++    auto covered = std::upper_bound(coverage.begin(), coverage.end(), address,
++                                   [](uint32_t addr, const auto& block) {
++                                     return addr < block.start;
++                                   });
++    if (covered != coverage.begin() && std::prev(covered)->contains(address))
++      return false;
++    const auto* region = decoded.regionContaining(address);
++    const auto* insn = decoded.get(address);
++    if (!region || !insn || insn->opcode == Opcode::kUnknown)
++      return false;
++    if (address == region->start)
++      return true;
++
++    // A pointer into a block, a call continuation, or a conditional-branch
++    // fallthrough is not evidence of another function. Do not split those.
++    const auto* previous = decoded.get(address - 4);
++    return previous && previous->is_branch() && !previous->is_call() &&
++           !previous->is_conditional();
++  };
++
++  size_t found = 0;
++  for (size_t offset = 0; offset + 4 <= rdata->size;) {
++    std::vector<uint32_t> slots;
++    std::unordered_set<uint32_t> known;
++    const size_t runStart = offset;
++    while (offset + 4 <= rdata->size) {
++      uint32_t target = load_and_swap<uint32_t>(rdata->data + offset);
++      if (!isCodePointer(target))
++        break;
++      slots.push_back(target);
++      if (anchors.contains(target))
++        known.insert(target);
++      offset += 4;
++    }
++    if (slots.size() >= 3 && known.size() >= 2) {
++      for (uint32_t target : slots) {
++        if (!isUnclaimedEntry(target))
++          continue;
++        graph.addFunction(target, 4, FunctionAuthority::VTABLE, true);
++        ++found;
++        REXCODEGEN_DEBUG("Analyze: function 0x{:08X} referenced by pointer table 0x{:08X}",
++                         target, rdata->baseAddress + static_cast<uint32_t>(runStart));
++      }
++    }
++    // Skip the non-pointer terminating this run (including an empty run).
++    offset += 4;
++  }
++  return found;
++}
++
+ void discoverAllFunctions(CodegenContext& ctx) {
+   REXCODEGEN_TRACE("Analyze: starting iterative discovery...");
+ 
+@@ -264,6 +367,14 @@ void discoverAllFunctions(CodegenContext& ctx) {
+     }
+   }
+ 
++  if (discoverFunctionPointerTables(ctx) > 0) {
++    for (size_t pass = 0; pass < REXCVAR_GET(max_discovery_iterations); ++pass) {
++      auto knownFunctions = buildKnownFunctions(graph);
++      if (discoverPendingFunctions(ctx, knownFunctions) == 0)
++        break;
++    }
++  }
++
+   REXCODEGEN_TRACE("Analyze: {} total functions after vtable scan", graph.functionCount());
+ }
+ 
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..d5ea544 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -35,8 +35,9 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ }  // namespace
+ 
+ static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
+-  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+-            ctx.last_indirect_target);
++  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X} "
++            "(LR=0x{:08X}, SP=0x{:08X})",
++            ctx.last_indirect_target, ctx.lr, ctx.r1.u32);
+ }
+ 
+ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 7bd264b..c8a23d8 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -19,6 +19,7 @@ add_executable(unit_tests
+     codegen/codegen_writer_test.cpp
+     codegen/output_partition_test.cpp
+     codegen/output_stamp_test.cpp
++    codegen/function_pointer_table_test.cpp
+ )
+ 
+ target_sources(unit_tests PRIVATE
+diff --git a/tests/unit/codegen/function_pointer_table_test.cpp b/tests/unit/codegen/function_pointer_table_test.cpp
+new file mode 100644
+index 0000000..68079d0
+--- /dev/null
++++ b/tests/unit/codegen/function_pointer_table_test.cpp
+@@ -0,0 +1,193 @@
++#include <catch2/catch_test_macros.hpp>
++
++#include <array>
++#include <memory>
++#include <vector>
++
++#include <rex/codegen/codegen_context.h>
++#include <rex/codegen/phases.h>
++#include <rex/codegen/test_support.h>
++#include <rex/system/binary_types.h>
++
++using namespace rex::codegen;
++
++namespace {
++
++constexpr uint32_t kText = 0x81000000;
++constexpr uint32_t kData = 0x80000000;
++
++void PutWord(std::vector<uint8_t>& bytes, size_t offset, uint32_t word) {
++  for (size_t i = 0; i < 4; ++i)
++    bytes.at(offset + i) = static_cast<uint8_t>(word >> (24 - i * 8));
++}
++
++uint32_t Branch(uint32_t from, uint32_t to) {
++  return 0x48000000 | ((to - from) & 0x03FFFFFC);
++}
++
++class PointerTableModule : public TestModule {
++ public:
++  void AddTable(const std::vector<uint8_t>& data, bool executable) {
++    binary_sections_.push_back({".rdata", kData, static_cast<uint32_t>(data.size()),
++                                data.data(), executable, false});
++  }
++};
++
++struct PointerTableFixture {
++  std::vector<uint8_t> text = std::vector<uint8_t>(0x140);
++
++  PointerTableFixture() {
++    // An existing indirect thunk immediately precedes two unregistered thunks.
++    PutWord(text, 0x10, 0x81830000);  // lwz r12, 0(r3)
++    PutWord(text, 0x14, 0x7D8903A6);  // mtctr r12
++    PutWord(text, 0x18, 0x4E800420);  // bctr
++    for (uint32_t start : {0x1Cu, 0x2Cu}) {
++      PutWord(text, start, 0x81830000);       // lwz r12, 0(r3)
++      PutWord(text, start + 4, 0x818C000C);   // lwz r12, 12(r12)
++      PutWord(text, start + 8, 0x7D8903A6);   // mtctr r12
++      PutWord(text, start + 12, 0x4E800420);  // bctr
++    }
++
++    // An internal backward branch precedes a separate null-guarded tail thunk.
++    PutWord(text, 0x48, 0x38630001);          // addi r3, r3, 1
++    PutWord(text, 0x4C, 0x2C030000);          // cmpwi r3, 0
++    PutWord(text, 0x50, Branch(0x50, 0x48));  // b loop
++    PutWord(text, 0x54, 0x80640010);          // lwz r3, 16(r4)
++    PutWord(text, 0x58, 0x28030000);          // cmplwi r3, 0
++    PutWord(text, 0x5C, 0x4D820020);          // beqlr
++    PutWord(text, 0x60, 0x80840014);          // lwz r4, 20(r4)
++    PutWord(text, 0x64, Branch(0x64, 0x80));  // b known_function
++    PutWord(text, 0x80, 0x4E800020);          // blr
++
++    // A real internal block also follows an unconditional branch. Table
++    // references must not turn it into an independently callable function.
++    PutWord(text, 0xA0, 0x41820008);          // beq internal_block
++    PutWord(text, 0xA4, Branch(0xA4, 0xAC));  // b return
++    PutWord(text, 0xA8, 0x38600001);          // li r3, 1
++    PutWord(text, 0xAC, 0x4E800020);          // blr
++
++    PutWord(text, 0xC0, 0x4E800421);  // bctrl: its successor is a continuation
++    PutWord(text, 0xC4, 0x4E800020);  // blr
++    PutWord(text, 0xE0, 0x4D820020);  // beqlr: its successor is a fallthrough
++    PutWord(text, 0xE4, 0x4E800020);  // blr
++    PutWord(text, 0x100, 0x60000000); // nop: no function boundary
++    PutWord(text, 0x104, 0x4E800020); // blr
++    PutWord(text, 0x120, 0xFFFFFFFF); // not a decoded function entry
++  }
++
++  std::unique_ptr<CodegenContext> Analyze(std::vector<uint32_t> offsets,
++                                         bool executableTable = false,
++                                         bool outOfLineBlock = false,
++                                         FunctionAuthority declaredExtent = FunctionAuthority::DISCOVERED) {
++    // Zero guards and a trailing byte exercise bounded dword scanning.
++    std::vector<uint8_t> data((offsets.size() + 2) * 4 + (executableTable ? 0 : 1));
++    for (size_t i = 0; i < offsets.size(); ++i)
++      PutWord(data, (i + 1) * 4, kText + offsets[i]);
++    if (declaredExtent != FunctionAuthority::DISCOVERED)
++      PutWord(data, 0, 1);  // One synthetic SEH scope record follows the count.
++    PointerTableModule module;
++    module.Load(kText, text.data(), text.size());
++    module.AddTable(data, executableTable);
++    auto ctx = std::make_unique<CodegenContext>(
++        CodegenContext::Create(BinaryView::fromModule(module), RecompilerConfig{}));
++    for (uint32_t offset : {0x10u, 0x48u, 0x80u, 0xA0u})
++      ctx->graph.addFunction(kText + offset, 4, FunctionAuthority::DISCOVERED, true);
++    if (outOfLineBlock) {
++      auto* owner = ctx->graph.addFunction(kText + 0xB0, 4,
++                                          FunctionAuthority::DISCOVERED, true);
++      owner->discover({{kText + 0xB0, 4}, {kText + 0x104, 4}}, {}, {});
++      ctx->graph.addFunction(kText + 0xD0, 4, FunctionAuthority::DISCOVERED, true);
++    }
++    if (declaredExtent != FunctionAuthority::DISCOVERED) {
++      constexpr uint32_t owner = kText + 0xB0;
++      constexpr uint32_t extent = 0x58;
++      ctx->graph.addFunction(owner, extent, declaredExtent, true);
++      if (declaredExtent == FunctionAuthority::PDATA)
++        ctx->scan.pdataSizes[owner] = extent;
++      else
++        ctx->Config().functions[owner].size = extent;
++    }
++    ctx->initDecoded();
++    REQUIRE(phases::Scan(*ctx, nullptr));
++    REQUIRE(phases::Discover(*ctx, nullptr));
++    return ctx;
++  }
++};
++
++}  // namespace
++
++TEST_CASE("Anchored pointer tables discover RTTI-free indirect and guarded tail thunks",
++          "[codegen][pointer_table]") {
++  PointerTableFixture fixture;
++  auto ctx = fixture.Analyze({0x10, 0x1C, 0x2C, 0x48, 0x54, 0x80});
++  for (uint32_t offset : {0x1Cu, 0x2Cu, 0x54u}) {
++    auto* node = ctx->graph.getFunction(kText + offset);
++    REQUIRE(node != nullptr);
++    CHECK(node->authority() == FunctionAuthority::VTABLE);
++    CHECK_FALSE(node->canDiscover());
++  }
++  CHECK(ctx->graph.getFunction(kText + 0x1C)->size() == 16);
++  CHECK(ctx->graph.getFunction(kText + 0x2C)->size() == 16);
++  CHECK(ctx->graph.getFunction(kText + 0x54)->size() == 20);
++}
++
++TEST_CASE("Pointer tables preserve internal blocks and fallthrough addresses",
++          "[codegen][pointer_table]") {
++  PointerTableFixture fixture;
++  auto ctx = fixture.Analyze({0x10, 0x80, 0xA8, 0xC4, 0xE4, 0x104, 0x120});
++  for (uint32_t offset : {0xA8u, 0xC4u, 0xE4u, 0x104u, 0x120u})
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + offset));
++  CHECK(ctx->graph.getFunctionContaining(kText + 0xA8)->base() == kText + 0xA0);
++}
++
++TEST_CASE("Pointer table discovery requires independent anchors and data-section evidence",
++          "[codegen][pointer_table]") {
++  PointerTableFixture fixture;
++  SECTION("No known functions") {
++    auto ctx = fixture.Analyze({0x1C, 0x2C, 0x54});
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x1C));
++  }
++  SECTION("Repeated references to one anchor are insufficient") {
++    auto ctx = fixture.Analyze({0x10, 0x10, 0x1C});
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x1C));
++  }
++  SECTION("An unaligned pointer breaks the run") {
++    auto ctx = fixture.Analyze({0x10, 0x81, 0x1C});
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x1C));
++  }
++  SECTION("A non-executable target breaks the run") {
++    auto ctx = fixture.Analyze({0x10, 0x80, kData - kText, 0x1C});
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x1C));
++  }
++  SECTION("Executable bytes are not pointer-table evidence") {
++    auto ctx = fixture.Analyze({0x10, 0x80, 0x1C}, true);
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x1C));
++  }
++  SECTION("Out-of-line blocks remain owned across intervening function entries") {
++    PutWord(fixture.text, 0xB0, 0x4E800020);
++    PutWord(fixture.text, 0xD0, 0x4E800020);
++    PutWord(fixture.text, 0x100, Branch(0x100, 0x80));
++    auto ctx = fixture.Analyze({0x10, 0x80, 0x104}, false, true);
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x104));
++  }
++}
++
++TEST_CASE("Declared function extents protect undiscovered inline exception handlers",
++          "[codegen][pointer_table]") {
++  PointerTableFixture fixture;
++  PutWord(fixture.text, 0xB0, 0x4E800020);  // Main control flow cannot reach the handler.
++  PutWord(fixture.text, 0x100, Branch(0x100, 0x80));
++  // A counted four-pointer scope record has the same surface shape as a
++  // function table. Its last field is an inline handler, not a new function.
++  const std::vector<uint32_t> record{0x10, 0x80, 0x80, 0x104};
++  SECTION("PDATA extent") {
++    auto ctx = fixture.Analyze(record, false, false, FunctionAuthority::PDATA);
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x104));
++    CHECK(ctx->graph.getFunction(kText + 0xB0)->size() == 0x58);
++  }
++  SECTION("Explicit config extent") {
++    auto ctx = fixture.Analyze(record, false, false, FunctionAuthority::CONFIG);
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x104));
++    CHECK(ctx->graph.getFunction(kText + 0xB0)->size() == 0x58);
++  }
++}

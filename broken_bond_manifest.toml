@@ -1,0 +1,12 @@
+# Naruto: The Broken Bond, title 55530825, media 09FFE047, version 0.0.0.3.
+# default.xex SHA-256: 8f70e79443e36b38e44b6a105dad51fb8909fb615d982753cabaac9b15f0d576
+
+[project]
+name = "broken_bond"
+sdk_version = "0.10.0"
+game_root = "game"
+
+[entrypoint]
+file_path = "game/default.xex"
+out_directory_path = "generated/default"
+includes = ["config/codegen.toml"]
