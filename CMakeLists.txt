@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(BROKENBOND_SOURCES
     src/main.cpp
+    src/input_replay.cpp
 )
 
 if(WIN32)
