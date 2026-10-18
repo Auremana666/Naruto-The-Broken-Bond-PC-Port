@@ -1,0 +1,544 @@
+// Frame layer of the D3D boundary: D3DDevice_Swap.
+//
+// 821B1DD0 is D3DDevice_Swap(device, pFrontBuffer, pParameters). The original
+// cannot run over the discard buffer: its tail F608 closes the ring segment and
+// submits it through F530, 8219EE40 switches the ring segment and waits for the
+// previous frame fence (+14940), 821C0900 retrains EDRAM, and VdSwap writes the
+// flip into the ring. The own Swap ports the CPU effects of the original in its
+// order, for the path the title takes (no parameters, no writeback slots
+// (+21632), no vblank wait (+23980 bit 2)):
+//   - +16560 += 1 and the front-buffer header copy (52 bytes at +14844);
+//   - 821BB4A0 (debug path) runs original;
+//   - presentation is own: the front buffer is read back as frame evidence
+//     instead of VdGetSystemCommandBuffer/VdSwap, whose outputs stay zero as on
+//     the original path with +21532 set (+23348 = 0, +23976 unchanged);
+//   - pending flags +16708: the display mode (bit 3) keeps VdSetDisplayMode,
+//     VdGetCurrentDisplayInformation and VdPersistDisplay from the SDK;
+//   - 821B1BF0 / 821B1A40 (display and gamma packets) run over the discard
+//     buffer, as do 821C0620 and 821A1C58(device, 0) at the end;
+//   - the frame batch closes as 8219F540 does, on the own queue (CloseFrameBatch),
+//     and +14940 holds the frame fence;
+//   - the frame is presented at once (the Present is posted right after the
+//     frame lot) and the Swap paces itself with a limiter on the title's
+//     presentation interval (+13596 vblanks of 60 Hz; 2 in the START, 30
+//     Swaps/s). The sync interrupt that 8219FA88 captured for 821B1860
+//     (821B16B0) is not delivered: no vblank or flip is emulated.
+//     The first Swap starts the own frame completion thread, which publishes
+//     each frame fence when its lot completed on the own queue.
+
+#include "gpu/d3d/frame.h"
+#include "gpu/diagnostics/diagnostics.h"
+#include "gpu/d3d/hooks.h"
+#include "gpu/d3d/device.h"
+#include "gpu/d3d/resources.h"
+#include "gpu/d3d/draw.h"
+#include "gpu/textures/textures.h"
+#include "gpu/buffers/buffers.h"
+#include "gpu/diagnostics/census.h"
+#include "gpu/diagnostics/frame_trace.h"
+#include "gpu/diagnostics/start_evidence.h"
+#include "gpu/diagnostics/frame_capture.h"
+#include "gpu/diagnostics/measure.h"
+#include "gpu/diagnostics/frame_state.h"
+#include "gpu/diagnostics/sampler.h"
+#include "gpu/d3d/present.h"
+#include "gpu/settings.h"
+#include "gpu/common/sha256.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <dxgiformat.h>
+#include <array>
+#include <chrono>
+#include <atomic>
+#include <condition_variable>
+#include <cstring>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <span>
+#include <string>
+#include <thread>
+#include <map>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <windows.h>
+#include <wrl/client.h>
+#include <dxcapi.h>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+#include <rex/cvar.h>
+#include <rex/hook.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/thread_state.h>
+#include <rex/system/xthread.h>
+#include <rex/system/xmemory.h>
+#include <functional>
+#include <thread>
+#include <rex/runtime.h>
+#include <rex/ui/window.h>
+#include <rex/ui/windowed_app_context.h>
+
+using namespace gpu;
+
+namespace gpu {
+std::atomic<uint64_t> swaps{0};  // Own Swaps of the frame layer.
+uint32_t Rotl(uint32_t v, unsigned n) { return n ? (v << n) | (v >> (32 - n)) : v; }
+
+// Runs an original over the discard buffer with up to eight argument
+// registers; the caller's register file is restored afterwards.
+uint32_t CallOverDiscard(PPCContext& ctx, uint8_t* base, uint32_t dev, GuestFunction fn, uint32_t sp,
+                         std::initializer_list<uint32_t> args, std::string_view name) {
+  std::array<uint8_t, sizeof(PPCContext)> saved{};
+  std::memcpy(saved.data(), &ctx, sizeof(PPCContext));
+  ctx.r1.u64 = sp;
+  decltype(&ctx.r3) regs[] = {&ctx.r3, &ctx.r4, &ctx.r5, &ctx.r6, &ctx.r7, &ctx.r8, &ctx.r9, &ctx.r10};
+  unsigned i = 0;
+  for (uint32_t a : args)
+    if (i < 8) regs[i++]->u64 = a;
+  const uint32_t discarded = RunOverDiscard(ctx, base, dev, fn, name);
+  std::memcpy(&ctx, saved.data(), sizeof(PPCContext));
+  return discarded;
+}
+
+// Two originals the own Swap runs over the discard buffer end with an
+// unconditional ring kick (8219F890) that Rise's counterparts do not have:
+// the scaler setup 821BD008 (LR 821BD1B0; Rise 821433C0) and 821B1BF0 itself
+// (LR 821B1DC4; Rise 82138848). Their packets are in the discard buffer and
+// the own Swap closes the frame batch itself, so the kick is skipped and
+// returns the cursor (+48) as the original does.
+std::atomic<uint64_t> swap_discard_kicks{0};
+bool AdmitSwapDiscardKick(PPCContext& ctx, uint8_t* base) {
+  if (!Active() || !own_swap_scope || (ctx.lr != 0x821BD1B0 && ctx.lr != 0x821B1DC4) || !device_owner ||
+      !device_owner->live() || ctx.r3.u32 != device_owner->device() || !discard_thread.load() ||
+      discard_thread.load() != GuestThread())
+    return false;
+  const uint32_t cursor = Get32(base, ctx.r3.u32 + 48);
+  if (cursor < inline_draw.discard || cursor >= inline_draw.discard + kDiscardLimit) return false;
+  ctx.r3.u64 = cursor;
+  swap_discard_kicks.fetch_add(1);
+  return true;
+}
+
+// Calls a kernel import with two arguments and returns r3.
+uint32_t CallImport(PPCContext& ctx, uint8_t* base, GuestFunction fn, uint32_t sp, uint32_t r3, uint32_t r4) {
+  std::array<uint8_t, sizeof(PPCContext)> saved{};
+  std::memcpy(saved.data(), &ctx, sizeof(PPCContext));
+  ctx.r1.u64 = sp;
+  ctx.r3.u64 = r3;
+  ctx.r4.u64 = r4;
+  fn(ctx, base);
+  const uint32_t result = ctx.r3.u32;
+  std::memcpy(&ctx, saved.data(), sizeof(PPCContext));
+  return result;
+}
+
+
+uint64_t dropped_sync_interrupts = 0;  // Render thread only.
+// The limiter of the own Swap. The period is the title's presentation interval
+// (+13596, in vblanks of 60 Hz); a Swap that arrives after its deadline starts
+// a new phase instead of catching up in a burst. The wait is a high-resolution
+// waitable timer up to about 1 ms before the deadline, then a spin on the QPC.
+// Render thread only.
+struct SwapLimiter {
+  HANDLE timer = nullptr;
+  int64_t frequency = 0, next = 0;
+  uint32_t interval = 0;
+  uint64_t paced = 0, waited = 0, late = 0, max_late_us = 0, timer_failures = 0;
+} swap_limiter;
+std::string LimiterSummary() {
+  const auto& l = swap_limiter;
+  return fmt::format("{{\"interval\":{},\"paced\":{},\"waited\":{},\"late\":{},\"max_late_us\":{},"
+                     "\"timer_failures\":{},\"period\":\"interval/60 s\"}}", l.interval, l.paced, l.waited, l.late,
+                     l.max_late_us, l.timer_failures);
+}
+// Frame-time meter in the window title: fps, mean
+// and max frame time of the last half second, measured between the ends of
+// consecutive own Swaps (after the limiter, the QPC of SwapLimiter), written
+// twice per second as "<title> | 30.0 fps | 33.3 ms (max 36.1)". Fire and
+// forget on the UI thread (CallInUIThreadDeferred, values captured by value);
+// the title is read there once. REX_NATIVE_FPS_TITLE=0 turns it off. Render
+// thread only; the image is untouched.
+struct FrameMeter {
+  int64_t last = 0, window_start = 0, sum = 0, max = 0;
+  uint32_t frames = 0;
+  int enabled = -1;
+} frame_meter;
+void MeterSwap() {
+  auto& m = frame_meter;
+  if (m.enabled < 0) {
+    const char* text = std::getenv("REX_NATIVE_FPS_TITLE");
+    m.enabled = text && std::string_view(text) == "0" ? 0 : 1;
+  }
+  const int64_t f = swap_limiter.frequency;
+  if (!m.enabled || !f) return;
+  LARGE_INTEGER now{};
+  QueryPerformanceCounter(&now);
+  if (m.last) {
+    const int64_t d = now.QuadPart - m.last;
+    m.sum += d;
+    m.max = std::max(m.max, d);
+    ++m.frames;
+  }
+  m.last = now.QuadPart;
+  if (!m.window_start) m.window_start = now.QuadPart;
+  if (now.QuadPart - m.window_start < f / 2 || !m.frames || !m.sum) return;
+  const double mean_ms = 1000.0 * double(m.sum) / double(m.frames) / double(f);
+  const double max_ms = 1000.0 * double(m.max) / double(f);
+  const double fps = double(m.frames) * double(f) / double(m.sum);
+  m.sum = m.max = 0;
+  m.frames = 0;
+  m.window_start = now.QuadPart;
+  HWND hwnd = DisplayHwnd();
+  auto* runtime = rex::Runtime::instance();
+  auto* app = runtime ? runtime->app_context() : nullptr;
+  if (!hwnd || !app) return;
+  app->CallInUIThreadDeferred([hwnd, fps, mean_ms, max_ms] {
+    static std::wstring base_title;  // UI thread only.
+    static bool title_read = false;
+    if (!title_read) {
+      wchar_t buffer[256]{};
+      GetWindowTextW(hwnd, buffer, 256);
+      base_title = buffer;
+      title_read = true;
+    }
+    wchar_t text[400]{};
+    swprintf_s(text, L"%s | %.1f fps | %.1f ms (max %.1f)", base_title.c_str(), fps, mean_ms, max_ms);
+    SetWindowTextW(hwnd, text);
+  });
+}
+// The interval the own Swap is paced at when it is not the title's: the
+// diagnostic REX_NATIVE_SWAP_INTERVAL (1..4). 0 keeps the title's +13596.
+uint32_t ForcedSwapInterval() {
+  static const uint32_t environment = [] {
+    const char* text = std::getenv("REX_NATIVE_SWAP_INTERVAL");
+    const int n = text ? std::atoi(text) : 0;
+    return n >= 1 && n <= 4 ? uint32_t(n) : 0u;
+  }();
+  // unlock_fps is not ported: the Rise version rewrote Rise's fixed engine
+  // step, which Broken Bond's engine timing does not share. Only the
+  // diagnostic interval is forced, and it changes the game speed.
+  return environment;
+}
+void PaceSwap(PPCContext& ctx, uint8_t* base, uint32_t dev) {
+  profile::Timer pace_time(profile::kSwapPace);
+  auto& l = swap_limiter;
+  // unlock_fps (or REX_NATIVE_SWAP_INTERVAL=<1..4>)
+  // paces the own Swap at that interval instead of the title's +13596, which
+  // stays untouched (the title keeps requesting 2 in the menus and the open
+  // world, 1 in the fight).
+  const uint32_t forced_interval = ForcedSwapInterval();
+  uint32_t interval = forced_interval ? forced_interval : Get32(base, dev + 13596);
+  if (interval < 1 || interval > 4) {  // Clamped to the covered range.
+    UncoveredOperation(ctx, fmt::format("Swap-presentation-interval-uncovered-{}", interval));
+    interval = std::clamp(interval, 1u, 4u);
+  }
+  if (!l.frequency) {
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    l.frequency = frequency.QuadPart;
+    l.timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!l.timer) StopInOrder(ctx, "Swap-limiter-timer", 88);
+  }
+  if (interval != l.interval) l.next = 0;  // A new interval starts a new phase.
+  l.interval = interval;
+  const int64_t period = int64_t(interval) * l.frequency / 60;
+  LARGE_INTEGER now{};
+  QueryPerformanceCounter(&now);
+  ++l.paced;
+  if (l.next && now.QuadPart < l.next) {
+    const int64_t remaining = l.next - now.QuadPart, margin = l.frequency / 1000;
+    if (remaining > margin) {
+      LARGE_INTEGER due{};  // Relative, in 100 ns units.
+      due.QuadPart = -std::max<int64_t>(1, (remaining - margin) * 10000000 / l.frequency);
+      if (SetWaitableTimerEx(l.timer, &due, 0, nullptr, nullptr, nullptr, 0)) WaitForSingleObject(l.timer, 1000);
+      else ++l.timer_failures;
+    }
+    do {
+      YieldProcessor();
+      QueryPerformanceCounter(&now);
+    } while (now.QuadPart < l.next);
+    ++l.waited;
+    l.next += period;
+  } else {
+    if (l.next) {
+      ++l.late;
+      l.max_late_us = std::max<uint64_t>(l.max_late_us, uint64_t((now.QuadPart - l.next) * 1000000 / l.frequency));
+    }
+    l.next = now.QuadPart + period;
+  }
+}
+}  // namespace gpu
+
+extern "C" void __imp__sub_821B1DD0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821BB4A0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821B1BF0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821B1A40(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821C0620(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821A1C58(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__VdSetDisplayMode(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__VdGetCurrentDisplayInformation(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__VdPersistDisplay(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__MmFreePhysicalMemory(PPCContext& __restrict, uint8_t*);
+REX_HOOK_RAW(sub_821B1DD0) {
+  if (!gpu::Active()) {
+    PacingAtSwap(ctx, base, ctx.r3.u32, false);  // Pacing samples of the Xenos mode.
+    // Frame state; a front buffer to capture is read after the original.
+    const uint32_t state_dev = ctx.r3.u32, state_front = ctx.r4.u32;
+    const int64_t capture = StateAtSwap(ctx, base, state_dev, false, state_front);
+    std::array<uint32_t, 6> front_fetch{};
+    if (capture >= 0)
+      for (unsigned i = 0; i < 6; ++i) front_fetch[i] = Get32(base, state_front + 28 + 4 * i);
+    __imp__sub_821B1DD0(ctx, base);
+    if (capture >= 0) StateAfterSwapReference(ctx, base, state_dev, front_fetch, capture);
+    return;
+  }
+  HookScope scope("Swap");
+  if (!device_owner || !device_owner->live() || ctx.r3.u32 != device_owner->device()) StopInOrder(ctx, "Swap-device", 88);
+  TakeStopRequest(ctx);  // The watchdog stop, in order on this thread.
+  TakePendingDraw(&ctx, base, "Swap");  // A pending BeginVertices quad goes into this frame.
+  gpu::sampler::RegisterThread("swap");  // The frames of the samples.
+  gpu::sampler::NoteSwap(own_draws.load());
+  PacingAtSwap(ctx, base, ctx.r3.u32, true);  // The frame that just ended.
+  StateAtSwap(ctx, base, ctx.r3.u32, true, ctx.r4.u32);  // Its state and front buffer.
+  const bool measuring = MeasureSwaps() > 0;
+  if (measuring) MeasureAtSwap(ctx);  // The frame closed by this Swap.
+  gpu::profile::Timer swap_time(gpu::profile::kSwap);
+  const uint32_t dev = ctx.r3.u32, front = ctx.r4.u32, params = ctx.r5.u32, lr = ctx.lr;
+  if (!front) StopInOrder(ctx, "Swap-front-buffer-null", 88);
+  // Not covered: without the census these are not read (the own limiter
+  // paces the frames).
+  if (params) UncoveredOperation(ctx, "Swap-parameters-uncovered");
+  if (Get32(base, dev + 21632)) UncoveredOperation(ctx, "Swap-writeback-slots-uncovered");
+  if (Get32(base, 0x833A37C8)) UncoveredOperation(ctx, "Swap-global-flush-uncovered");
+  if (Get32(base, dev + 23980) & 4) UncoveredOperation(ctx, "Swap-vblank-wait-uncovered");
+  // The START lot stops the render thread at its fifth draw. Seven own
+  // Swaps after the frame where the chosen occurrence was due (one lot per
+  // frame) without it, the census stops here in order with that reason.
+  if (!measuring && start_draws.load() && swaps.load() >= start_first_swap.load() + StartStopOccurrence() + 7)
+    StopInOrder(ctx, "native-d3d-start-occurrence-unmatched", 86);
+  const uint32_t frame = (ctx.r1.u32 - 1024) & ~15u;  // Below the caller's frame.
+  struct SwapScope {
+    SwapScope() { gpu::own_swap_scope = true; }
+    ~SwapScope() { gpu::own_swap_scope = false; }
+  } swap_scope;
+  Put32(base, dev + 16560, Get32(base, dev + 16560) + 1);
+  // Front-buffer fetch constant (header +28), adjusted as the original does for VdSwap.
+  std::array<uint32_t, 6> f{};
+  for (unsigned i = 0; i < 6; ++i) f[i] = Get32(base, front + 28 + 4 * i);
+  uint32_t f1 = f[1];
+  if ((f1 & 0x3F) == 50) f1 = (f1 & ~0x3Fu) | 6;
+  else if ((f1 & 0x3F) == 7) f1 = (f1 & ~0x3Fu) | 54;
+  const uint32_t mode13592 = Get32(base, dev + 13608);
+  const uint32_t low = Rotl(mode13592, 15) & 0x7FFF;
+  const uint32_t merged = (low & ~0xFFFFE001u) | (f[3] & 0xFFFFE001u);
+  const uint32_t f3 = (low & 1) | (merged & 0xFFFFFFFEu);
+  std::memcpy(base + dev + 14844, base + front, 52);
+  const uint32_t extra = (Rotl(f3, 2) & 2) + 1;
+  const uint32_t width = (f[2] & 0x1FFF) + extra, height = ((f[2] >> 13) & 0x1FFF) + extra;
+  const uint32_t front_base = f1 & 0xFFFFF000u;
+  CallGuest(ctx, base, __imp__sub_821BB4A0, frame, dev, front);
+  const uint64_t n = swaps.fetch_add(1) + 1;
+  if (n == 1) AttachPresentation(ctx);  // Own swapchain on the SDK window.
+  MaybePostClose(n);  // REX_NATIVE_CLOSE_AFTER_SWAPS, the window close without a person.
+  // START evidence: after the first own draw of the START lot, three more
+  // readbacks, 30 swaps apart.
+  static uint64_t start_reads = 0, next_start_read = 0;
+  const bool start_read = !measuring && start_draws.load() && start_reads < 3 && n >= next_start_read;
+  if (start_read) {
+    ++start_reads;
+    next_start_read = n + 30;
+  }
+  // No front-buffer read in the measurement mode, except the partial
+  // images of the guard census.
+  const bool census_read = CensusFrontRead(n);
+  const std::string front_record = (Diagnostics() && !measuring && (n <= kFrontReadbacks || start_read)) || census_read
+                                       ? ReadFrontBuffer(front, n) : "null";
+  {  // Frame trace: the frame this Swap closes.
+    static uint64_t draws_at_last_swap = 0;
+    const uint64_t draws_now = own_draws.load();
+    FrameTraceNoteSwap(n, draws_now - draws_at_last_swap);
+    TransitionCaptureAtSwap(front, n, draws_now - draws_at_last_swap);
+    draws_at_last_swap = draws_now;
+    {  // Idle buffer entries leave, retired buffers are released after the frame's draws, on the stage.
+      auto* dispatcher = gpu::host::ActiveDispatcher();
+      if (dispatcher) dispatcher->Defer([n] { BufferRegistrySweep(n); });
+      else BufferRegistrySweep(n);
+    }
+    if (FrameTraceTarget() == n) {
+      FrameTraceReadback(front, n);
+      FrameTraceRearm();  // The key mode traces again at the next F11.
+    }
+  }
+  Put32(base, dev + 23348, 0);
+  uint32_t flags = Get32(base, dev + 16708);
+  const uint32_t pending = flags;
+  // The gamma ramp of the title (D3DGAMMARAMP, 3 x 256 big-endian words at
+  // +15004), recorded when SetGammaRamp marked it pending (bit 1), first 4 times
+  // (also without the diagnostics: the title sets it about once per boot).
+  static uint32_t gamma_records = 0;
+  if ((pending & 2) && gamma_records < 4) {
+    ++gamma_records;
+    std::string words;
+    for (uint32_t i = 0; i < 768; ++i) words += fmt::format("{}{}", i ? "," : "", Get16(base, dev + 15004 + 2 * i));
+    gpu::host::Record("native-d3d-gamma-ramp", fmt::format(
+        "\"swap\":{},\"pending16708\":{},\"ramp_rgb_256_words\":[{}]", swaps.load() + 1, pending, words));
+  }
+  // The pending ramp goes to the final pass of the presentation.
+  if (pending & 2) PostGammaRamp(ctx, base, dev);
+  Put32(base, dev + 16708, 0);
+  std::string display_record = "null";
+  if (flags & 8) {
+    const uint32_t format = mode13592 & 0x3F;
+    uint32_t mode = 0x40000000 | (Rotl(Get32(base, dev + 13612), 28) & 0x30000000) |
+                    (format == 7 || format == 54 ? 0x08000000 : 0);
+    if (Get32(base, dev + 13544) == 720 && (Get32(base, dev + 13548) == 480 || Get32(base, dev + 13548) == 576))
+      mode |= 2;
+    const uint32_t info = frame + 368;
+    const uint32_t set = CallImport(ctx, base, __imp__VdSetDisplayMode, frame, mode, 0);
+    CallImport(ctx, base, __imp__VdGetCurrentDisplayInformation, frame, info, 0);
+    Put32(base, dev + 21544, Get16(base, info + 72));
+    Put32(base, dev + 21548, Get16(base, info + 74));
+    Put32(base, dev + 21552, Get16(base, info + 86));
+    display_record = fmt::format("{{\"mode\":{},\"set_result\":{},\"info\":[{},{},{}]}}", mode, set,
+                                 Get16(base, info + 72), Get16(base, info + 74), Get16(base, info + 86));
+  }
+  const uint32_t front_physical = GuestPhysicalAlias(front_base);
+  if (Get8(base, dev + 10942) & 0x10) {
+    std::memset(base + dev + 13668, 0, 56);
+    flags |= 4;
+    Put8(base, dev + 10942, Get8(base, dev + 10942) & 0xEF);
+  }
+  const uint8_t b43 = Get8(base, dev + 10943);
+  if (b43 & 0x40) flags |= 3;
+  Put8(base, dev + 10943, b43 & 0xBF);
+  uint32_t discarded = 0;
+  if (flags)
+    discarded += CallOverDiscard(ctx, base, dev, __imp__sub_821B1BF0, frame,
+                                 {dev, flags, front_physical, mode13592, width, height, dev + 13724, dev + 15004},
+                                 "Swap-821B1BF0");
+  else
+    discarded += CallOverDiscard(ctx, base, dev, __imp__sub_821B1A40, frame, {dev, mode13592}, "Swap-821B1A40");
+  std::string persist_record = "null";
+  if (flags & 8) {
+    std::memset(base + frame + 184, 0, 12);
+    Put32(base, frame + 160, 0);
+    const uint32_t persisted = CallImport(ctx, base, __imp__VdPersistDisplay, frame, frame + 184, frame + 160);
+    const uint32_t memory = Get32(base, frame + 160);
+    if (persisted) CallImport(ctx, base, __imp__MmFreePhysicalMemory, frame, 1, memory);
+    persist_record = fmt::format("{{\"result\":{},\"memory\":{},\"freed\":{}}}", persisted, memory, persisted != 0);
+  }
+  // End of frame: own batch close in place of 8219F890 -> 8219F630 -> 8219F540.
+  // EDRAM retraining (821C0900) and the ring segment switch (8219EE40, whose
+  // own wait on +14940 is skipped because +23980 has bit 0) have no own
+  // equivalent.
+  // The frame lot closes without waiting; its frame end goes to the own
+  // frame completion thread, which publishes the frame fence once the lot
+  // completed. The lot close is posted, so a failed posted operation drops it
+  // and nothing is published.
+  // The front buffer is copied in the frame lot. Its Present
+  // is posted right after the lot, on the same owner and queue, so it reads
+  // the copy; the next copy into the same stage slot comes two Swaps later.
+  const auto present = PostStageFront(ctx, front, n, front_record != "null");
+  uint32_t frame_fence = 0;
+  std::string fence_fields;
+  HANDLE lot_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!lot_event) StopInOrder(ctx, "Swap-frame-lot-event", 88);
+  auto close_lot = [lot_event](uint32_t) {
+    auto* dispatcher = gpu::host::ActiveDispatcher();
+    return dispatcher && dispatcher->Post([lot_event](Engine& engine, std::string& out) {
+      uint64_t target = 0;
+      return engine.CloseFrame(lot_event, target, out);
+    });
+  };
+  if (!device_owner->CloseFrameBatch(close_lot, frame_fence, fence_fields)) {
+    RecordPostedFailure("Swap-CloseFrameBatch");
+    StopInOrder(ctx, "Swap-frame-batch-unproved", 88);
+  }
+  // The sync interrupt of 821B1860 (821B16B0, the only routine the
+  // leaf admits) is dropped: the Swap presents and paces itself.
+  const auto batch_interrupts = TakeLeafInterrupts();
+  dropped_sync_interrupts += batch_interrupts.size();
+  if (n == 1) {
+    std::string start_fields;
+    if (!gpu::host::StartInterrupts(dev, device_owner->scratch(), start_fields))
+      StopInOrder(ctx, "Swap-own-frame-completion-start", 88);
+    gpu::host::Record("native-d3d-interrupts-start", start_fields + fmt::format(
+        ",\"swap\":1,\"frame_fence\":{},\"dropped_sync_interrupts\":{}", frame_fence, batch_interrupts.size()));
+  }
+  std::string interrupt_args;
+  for (const auto& interrupt : batch_interrupts)
+    interrupt_args += fmt::format("{}[{},{},{},{}]", interrupt_args.empty() ? "" : ",", interrupt.routine,
+                                  interrupt.argument, interrupt.cpu_mask, interrupt.lr);
+  if (present && !gpu::PresentFrame(present)) {
+    RecordPostedFailure("Swap-present");
+    StopInOrder(ctx, "Swap-present-post", 88);
+  }
+  if (!gpu::host::QueueFrameEnd(frame_fence, lot_event, {}, n, nullptr))
+    StopInOrder(ctx, "Swap-own-frame-end-queue", 88);
+  // As the tail of the original (82139090): BlockOnFence(+14940, 3) on the
+  // fence of the previous frame, then +14940 keeps this frame's fence.
+  const uint32_t previous_fence = Get32(base, dev + 14940);
+  std::string previous_fields = "null";
+  if (previous_fence) {
+    gpu::profile::Timer wait_time(gpu::profile::kSwapWaitIdle);
+    std::string evidence, fields;
+    auto drain = [&] {
+      auto* dispatcher = gpu::host::ActiveDispatcher();
+      return dispatcher && dispatcher->Drain(evidence);
+    };
+    if (device_owner->BlockOnFence(previous_fence, drain, FenceWaitFailed, fields) ==
+        DeviceOwner::FenceResult::Failed) {
+      TakeStopRequest(ctx);  // A watchdog stop asked meanwhile keeps its own reason.
+      RecordPostedFailure("Swap-previous-frame-fence");
+      StopInOrder(ctx, "Swap-previous-frame-fence-unproved", 88);
+    }
+    previous_fields = "{" + fields + "}";
+    // The previous frame was presented (its Present was posted
+    // after its lot) and its lot completed, so it counts as flipped (+16568),
+    // as the console counts the flip before this wait returns. The vblank
+    // counters (+16548, +16552, +16556, +16564, +23376) stay unchanged: only
+    // the interrupt routines, no longer delivered, read them.
+    Put32(base, dev + 16568, Get32(base, dev + 16568) + 1);
+  }
+  Put32(base, dev + 14940, frame_fence);
+  Put8(base, dev + 10941, Get8(base, dev + 10941) & 0xEF);
+  // 821C0620 calls the callback chains rooted at 820009D0 and
+  // 82000850, empty at the device creation (row 17), inside this scope.
+  for (const uint32_t root_at : {0x820009D0u, 0x82000850u}) {
+    const uint32_t root = Get32(base, root_at);
+    if (root && Get32(base, root))  // The original below calls them, as on the console.
+      UncoveredOperation(ctx, fmt::format("Swap-821C0620-callback-present-{:08X}", root_at));
+  }
+  discarded += CallOverDiscard(ctx, base, dev, __imp__sub_821C0620, frame, {dev}, "Swap-821C0620");
+  discarded += CallOverDiscard(ctx, base, dev, __imp__sub_821A1C58, frame, {dev, 0}, "Swap-821A1C58");
+  static const auto first_swap = std::chrono::steady_clock::now();
+  const auto host_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - first_swap).count();
+  if (Diagnostics() && (n <= 8 || n % (measuring ? 300 : 30) == 0 || start_read || census_read))
+    gpu::host::Record("native-d3d-swap", fmt::format(
+        "\"host_ms_since_first_swap\":{},\"own_draws\":{},\"inline_quads\":{},\"kicks\":{},\"swap_discard_kicks\":{},"
+        "\"producer_arrivals\":{},\"producer_calls\":{},\"unpredicated_commits\":{},\"texture_locks\":{},"
+        "\"texture_uploads\":{},\"texture_binding_reuses\":{},\"texture_anisotropy_forced\":{},\"texture_integral_verify\":{},"
+        "\"scene_items\":{},\"scene_flushes\":{},\"start_draws\":{},"
+        "\"batch_interrupts\":[{}],\"leaf_interrupts\":{},\"interrupts\":{},\"records\":{},"
+        "\"vblank16532\":{},\"swap_interrupts16548\":{},\"flips16552\":{},", host_ms, own_draws.load(),
+        InlineDrawCalls(), kicks.load(), swap_discard_kicks.load(), producer_arrivals.load(), producer_calls.load(), unpredicated_commits.load(),
+        texture_content.Locks(), texture_uploads.load(), texture_binding_reuses.load(),
+        texture_anisotropy_forced.load(), TextureVerify(),
+        scene_items.load(), scene_flushes.load(), start_draws.load(), interrupt_args,
+        leaf_interrupt_count.load(),
+        gpu::host::InterruptSummary(), gpu::host::RecordSummary(), Get32(base, dev + 16548), Get32(base, dev + 16564),
+        Get32(base, dev + 16568)) + fmt::format(
+        "\"swap\":{},\"lr\":{},\"guest_thread\":{},\"front\":{},\"front_physical\":{},\"size\":[{},{}],"
+        "\"pending16692\":{},\"flags\":{},\"display\":{},\"persist\":{},{},\"previous_frame_fence\":{},"
+        "\"fences\":{},\"discarded_bytes\":{},\"front_buffer\":{},\"vdswap\":false,\"edram_retrain\":false,"
+        "\"ring_segment_switch\":false,\"dropped_sync_interrupts\":{},\"limiter\":{}", n, lr, GuestThread(),
+        front, front_physical, width, height, pending, flags, display_record, persist_record, fence_fields,
+        previous_fields, device_owner->FenceSummary(), discarded, front_record, dropped_sync_interrupts,
+        LimiterSummary()));
+  PaceSwap(ctx, base, dev);  // Last, after the present.
+  MeterSwap();  // The frame-time meter of the window title.
+}
