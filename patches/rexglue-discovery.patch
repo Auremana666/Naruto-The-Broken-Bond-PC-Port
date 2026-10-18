@@ -1,8 +1,8 @@
 diff --git a/src/codegen/phase_discover.cpp b/src/codegen/phase_discover.cpp
-index 1c73548..275f7cd 100644
+index 1c73548..6fd2e5f 100644
 --- a/src/codegen/phase_discover.cpp
 +++ b/src/codegen/phase_discover.cpp
-@@ -13,8 +13,10 @@
+@@ -13,8 +13,11 @@
  #include "decoded_binary.h"
  #include <rex/codegen/function_scanner.h>
  
@@ -10,69 +10,65 @@ index 1c73548..275f7cd 100644
  #include <array>
  #include <bitset>
 +#include <iterator>
++#include <string_view>
  #include <unordered_set>
  
  #include <rex/codegen/phases.h>
-@@ -190,6 +192,107 @@ void discoverFunction(CodegenContext& ctx, uint32_t funcAddr,
+@@ -190,6 +193,221 @@ void discoverFunction(CodegenContext& ctx, uint32_t funcAddr,
    }
  }
  
-+size_t discoverFunctionPointerTables(CodegenContext& ctx) {
-+  auto& graph = ctx.graph;
-+  auto& decoded = ctx.decoded();
-+  const auto& binary = ctx.binary();
-+  const auto* rdata = binary.findSectionByName(".rdata");
-+  if (!rdata || !rdata->data || rdata->executable)
-+    return 0;
++bool isCodePointer(const BinaryView& binary, uint32_t address) {
++  return (address & 3) == 0 && binary.isExecutable(address) &&
++         !binary.isInImportExportRange(address);
++}
 +
-+  // RTTI is optional. Require a run of code pointers anchored by two distinct
-+  // already-discovered functions before considering its remaining entries.
-+  // Snapshot the anchors so speculative discoveries cannot validate later runs.
-+  std::unordered_set<uint32_t> anchors;
-+  std::vector<CodeRegion> claimed;
-+  // Exception scope tables also contain runs of code pointers. Inline handlers
-+  // may not be reachable during initial discovery, but their declared owner
-+  // still reserves the entire PDATA/config extent, including those gaps.
-+  for (const auto& [addr, size] : ctx.scan.pdataSizes)
-+    claimed.push_back({addr, addr + size});
-+  for (const auto& [addr, config] : ctx.Config().functions) {
-+    if (uint32_t size = config.getSize(addr); size != 0)
++// Code already owned by a function, so a pointer into it cannot start another.
++class ClaimedCode {
++ public:
++  explicit ClaimedCode(CodegenContext& ctx) : ctx_(ctx) {
++    std::vector<CodeRegion> claimed;
++    // Exception scope tables also contain runs of code pointers. Inline
++    // handlers may not be reachable during initial discovery, but their
++    // declared owner still reserves the entire PDATA/config extent.
++    for (const auto& [addr, size] : ctx.scan.pdataSizes)
 +      claimed.push_back({addr, addr + size});
-+  }
-+  for (const auto& [addr, node] : graph.functions()) {
-+    if (!node->isImport() && !node->canDiscover())
-+      anchors.insert(addr);
-+    if (node->blocks().empty()) {
-+      claimed.push_back({addr, addr + node->size()});
-+    } else {
-+      for (const auto& block : node->blocks())
-+        claimed.push_back({block.base, block.base + block.size});
++    for (const auto& [addr, config] : ctx.Config().functions) {
++      if (uint32_t size = config.getSize(addr); size != 0)
++        claimed.push_back({addr, addr + size});
++    }
++    for (const auto& [addr, node] : ctx.graph.functions()) {
++      if (node->blocks().empty()) {
++        claimed.push_back({addr, addr + node->size()});
++      } else {
++        for (const auto& block : node->blocks())
++          claimed.push_back({block.base, block.base + block.size});
++      }
++    }
++    // A function can own out-of-line blocks beyond later function entries.
++    // Index all claimed blocks, not just the nearest preceding function.
++    std::sort(claimed.begin(), claimed.end(),
++              [](const auto& a, const auto& b) { return a.start < b.start; });
++    for (const auto& block : claimed) {
++      if (!coverage_.empty() && block.start <= coverage_.back().end)
++        coverage_.back().end = std::max(coverage_.back().end, block.end);
++      else
++        coverage_.push_back(block);
 +    }
 +  }
-+  // A function can own out-of-line blocks beyond later function entries.
-+  // Index all claimed blocks, not just the nearest preceding function.
-+  std::sort(claimed.begin(), claimed.end(),
-+            [](const auto& a, const auto& b) { return a.start < b.start; });
-+  std::vector<CodeRegion> coverage;
-+  for (const auto& block : claimed) {
-+    if (!coverage.empty() && block.start <= coverage.back().end)
-+      coverage.back().end = std::max(coverage.back().end, block.end);
-+    else
-+      coverage.push_back(block);
-+  }
 +
-+  auto isCodePointer = [&](uint32_t address) {
-+    return (address & 3) == 0 && binary.isExecutable(address) &&
-+           !binary.isInImportExportRange(address);
-+  };
-+  auto isUnclaimedEntry = [&](uint32_t address) {
-+    if (graph.isEntryPoint(address))
++  // True if a referenced address can start a new function without splitting
++  // existing code: it is unowned and begins a region or follows an
++  // unconditional branch.
++  bool isUnclaimedEntry(uint32_t address) const {
++    auto& decoded = ctx_.decoded();
++    if (ctx_.graph.isEntryPoint(address))
 +      return false;
-+    auto covered = std::upper_bound(coverage.begin(), coverage.end(), address,
-+                                   [](uint32_t addr, const auto& block) {
-+                                     return addr < block.start;
-+                                   });
-+    if (covered != coverage.begin() && std::prev(covered)->contains(address))
++    auto covered = std::upper_bound(coverage_.begin(), coverage_.end(), address,
++                                    [](uint32_t addr, const auto& block) {
++                                      return addr < block.start;
++                                    });
++    if (covered != coverage_.begin() && std::prev(covered)->contains(address))
 +      return false;
 +    const auto* region = decoded.regionContaining(address);
 +    const auto* insn = decoded.get(address);
@@ -86,7 +82,29 @@ index 1c73548..275f7cd 100644
 +    const auto* previous = decoded.get(address - 4);
 +    return previous && previous->is_branch() && !previous->is_call() &&
 +           !previous->is_conditional();
-+  };
++  }
++
++ private:
++  CodegenContext& ctx_;
++  std::vector<CodeRegion> coverage_;
++};
++
++size_t discoverFunctionPointerTables(CodegenContext& ctx) {
++  auto& graph = ctx.graph;
++  const auto& binary = ctx.binary();
++  const auto* rdata = binary.findSectionByName(".rdata");
++  if (!rdata || !rdata->data || rdata->executable)
++    return 0;
++
++  // RTTI is optional. Require a run of code pointers anchored by two distinct
++  // already-discovered functions before considering its remaining entries.
++  // Snapshot the anchors so speculative discoveries cannot validate later runs.
++  std::unordered_set<uint32_t> anchors;
++  for (const auto& [addr, node] : graph.functions()) {
++    if (!node->isImport() && !node->canDiscover())
++      anchors.insert(addr);
++  }
++  const ClaimedCode claimed(ctx);
 +
 +  size_t found = 0;
 +  for (size_t offset = 0; offset + 4 <= rdata->size;) {
@@ -95,7 +113,7 @@ index 1c73548..275f7cd 100644
 +    const size_t runStart = offset;
 +    while (offset + 4 <= rdata->size) {
 +      uint32_t target = load_and_swap<uint32_t>(rdata->data + offset);
-+      if (!isCodePointer(target))
++      if (!isCodePointer(binary, target))
 +        break;
 +      slots.push_back(target);
 +      if (anchors.contains(target))
@@ -104,7 +122,7 @@ index 1c73548..275f7cd 100644
 +    }
 +    if (slots.size() >= 3 && known.size() >= 2) {
 +      for (uint32_t target : slots) {
-+        if (!isUnclaimedEntry(target))
++        if (!claimed.isUnclaimedEntry(target))
 +          continue;
 +        graph.addFunction(target, 4, FunctionAuthority::VTABLE, true);
 +        ++found;
@@ -118,14 +136,122 @@ index 1c73548..275f7cd 100644
 +  return found;
 +}
 +
++// Forget every register an instruction may write. Forgetting too much only
++// misses a reference; keeping a stale high half would invent one.
++void forgetWrittenRegisters(const DecodedInsn& insn, std::bitset<32>& known) {
++  if (insn.is_branch()) {
++    if (insn.is_call()) {
++      known.reset(0);
++      for (uint32_t reg = 3; reg <= 12; ++reg)
++        known.reset(reg);
++    } else if (!insn.is_conditional()) {
++      known.reset();
++    }
++    return;
++  }
++  const auto& info = ppc::get_opcode_info(insn.opcode);
++  if (info.group == ppc::OpcodeGroup::kMemory) {
++    const std::string_view name = info.name ? info.name : "";
++    if (!name.starts_with("st"))
++      known.reset(insn.D.RT);
++    if (name.ends_with('u') || name.ends_with("ux"))
++      known.reset(insn.D.RA);
++    return;
++  }
++  // addi writes RT and ori writes RA; keep their shared source register.
++  if (insn.opcode != Opcode::ori)
++    known.reset(insn.D.RT);
++  if (insn.opcode != Opcode::addi)
++    known.reset(insn.D.RA);
++}
++
++// Address-taken functions without a direct call, such as qsort comparators,
++// callbacks, and member-pointer thunks, are referenced only by a lis+addi or
++// lis+ori pair. Call-graph discovery misses them, and an indirect call to one
++// traps at runtime.
++size_t discoverCodeAddressReferences(CodegenContext& ctx) {
++  auto& graph = ctx.graph;
++  auto& decoded = ctx.decoded();
++  const auto& binary = ctx.binary();
++  const ClaimedCode claimed(ctx);
++
++  // Switch dispatch also materializes the address of its table, which follows
++  // a bctr just like a function entry would.
++  std::unordered_set<uint32_t> tables;
++  for (const auto& [addr, table] : ctx.Config().switchTables)
++    tables.insert(table.tableAddress);
++
++  // Only discovered code is scanned, so data in executable sections cannot
++  // form a reference. Register state starts empty at every block and label.
++  std::vector<std::pair<uint32_t, uint32_t>> references;
++  for (const auto& [addr, node] : graph.functions()) {
++    if (node->isImport() || node->canDiscover())
++      continue;
++    for (const auto& table : node->jumpTables())
++      tables.insert(table.tableAddress);
++    for (const auto& block : node->blocks()) {
++      std::array<uint32_t, 32> high{};
++      std::bitset<32> known;
++      for (uint32_t site = block.base; site < block.end(); site += 4) {
++        if (node->isLabel(site))
++          known.reset();
++        const auto* insn = decoded.get(site);
++        if (!insn) {
++          known.reset();
++          continue;
++        }
++        if (isLis(*insn)) {
++          high[insn->D.RT] = static_cast<uint32_t>(insn->D.d) << 16;
++          known.set(insn->D.RT);
++          continue;
++        }
++        if (insn->opcode == Opcode::addi && insn->D.RA != 0 && known.test(insn->D.RA))
++          references.push_back({site, high[insn->D.RA] + static_cast<uint32_t>(insn->D.SIMM())});
++        else if (insn->opcode == Opcode::ori && known.test(insn->D.RT))
++          references.push_back({site, high[insn->D.RT] | insn->D.UIMM()});
++        forgetWrittenRegisters(*insn, known);
++      }
++    }
++  }
++
++  size_t found = 0;
++  for (const auto& [site, target] : references) {
++    if (!isCodePointer(binary, target) || tables.contains(target))
++      continue;
++    // A switch table the scanner did not recognize starts with a code
++    // address, not with an instruction.
++    auto first = decoded.read<uint32_t>(target);
++    if (!first || isCodePointer(binary, *first))
++      continue;
++    if (!claimed.isUnclaimedEntry(target))
++      continue;
++    graph.addFunction(target, 4, FunctionAuthority::DISCOVERED, true);
++    ++found;
++    REXCODEGEN_DEBUG("Analyze: function 0x{:08X} referenced by address at 0x{:08X}", target,
++                     site);
++  }
++  return found;
++}
++
  void discoverAllFunctions(CodegenContext& ctx) {
    REXCODEGEN_TRACE("Analyze: starting iterative discovery...");
  
-@@ -264,6 +367,14 @@ void discoverAllFunctions(CodegenContext& ctx) {
+@@ -264,6 +482,25 @@ void discoverAllFunctions(CodegenContext& ctx) {
      }
    }
  
 +  if (discoverFunctionPointerTables(ctx) > 0) {
++    for (size_t pass = 0; pass < REXCVAR_GET(max_discovery_iterations); ++pass) {
++      auto knownFunctions = buildKnownFunctions(graph);
++      if (discoverPendingFunctions(ctx, knownFunctions) == 0)
++        break;
++    }
++  }
++
++  // An address-taken function can take the address of another one.
++  for (size_t round = 0; round < REXCVAR_GET(max_discovery_iterations); ++round) {
++    if (discoverCodeAddressReferences(ctx) == 0)
++      break;
 +    for (size_t pass = 0; pass < REXCVAR_GET(max_discovery_iterations); ++pass) {
 +      auto knownFunctions = buildKnownFunctions(graph);
 +      if (discoverPendingFunctions(ctx, knownFunctions) == 0)
@@ -153,17 +279,130 @@ index bd43109..d5ea544 100644
  
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
 diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
-index 7bd264b..c8a23d8 100644
+index 7bd264b..aa51595 100644
 --- a/tests/unit/CMakeLists.txt
 +++ b/tests/unit/CMakeLists.txt
-@@ -19,6 +19,7 @@ add_executable(unit_tests
+@@ -19,6 +19,8 @@ add_executable(unit_tests
      codegen/codegen_writer_test.cpp
      codegen/output_partition_test.cpp
      codegen/output_stamp_test.cpp
 +    codegen/function_pointer_table_test.cpp
++    codegen/code_address_reference_test.cpp
  )
  
  target_sources(unit_tests PRIVATE
+diff --git a/tests/unit/codegen/code_address_reference_test.cpp b/tests/unit/codegen/code_address_reference_test.cpp
+new file mode 100644
+index 0000000..a2fa1a5
+--- /dev/null
++++ b/tests/unit/codegen/code_address_reference_test.cpp
+@@ -0,0 +1,106 @@
++#include <catch2/catch_test_macros.hpp>
++
++#include <memory>
++#include <vector>
++
++#include <rex/codegen/codegen_context.h>
++#include <rex/codegen/phases.h>
++#include <rex/codegen/test_support.h>
++
++using namespace rex::codegen;
++
++namespace {
++
++constexpr uint32_t kText = 0x81000000;
++
++void PutWord(std::vector<uint8_t>& bytes, size_t offset, uint32_t word) {
++  for (size_t i = 0; i < 4; ++i)
++    bytes.at(offset + i) = static_cast<uint8_t>(word >> (24 - i * 8));
++}
++
++uint32_t Branch(uint32_t from, uint32_t to) {
++  return 0x48000000 | ((to - from) & 0x03FFFFFC);
++}
++
++std::unique_ptr<CodegenContext> Analyze(const std::vector<uint8_t>& text) {
++  TestModule module;
++  module.Load(kText, text.data(), text.size());
++  auto ctx = std::make_unique<CodegenContext>(
++      CodegenContext::Create(BinaryView::fromModule(module), RecompilerConfig{}));
++  ctx->graph.addFunction(kText, 4, FunctionAuthority::DISCOVERED, true);
++  ctx->initDecoded();
++  REQUIRE(phases::Scan(*ctx, nullptr));
++  REQUIRE(phases::Discover(*ctx, nullptr));
++  return ctx;
++}
++
++}  // namespace
++
++TEST_CASE("Code address references discover address-taken functions",
++          "[codegen][code_address]") {
++  std::vector<uint8_t> text(0x200);
++  // The caller is the only function reachable from the call graph.
++  PutWord(text, 0x00, 0x3D608100);  // lis r11, 0x8100
++  PutWord(text, 0x04, 0x7F83E378);  // mr r3, r28
++  PutWord(text, 0x08, 0x38CB0100);  // addi r6, r11, 0x100: comparator
++  PutWord(text, 0x0C, 0x3D408100);  // lis r10, 0x8100
++  PutWord(text, 0x10, 0x814A0000);  // lwz r10, 0(r10)
++  PutWord(text, 0x14, 0x388A0120);  // addi r4, r10, 0x120: stale high half
++  PutWord(text, 0x18, 0x3D208100);  // lis r9, 0x8100
++  PutWord(text, 0x1C, 0x61250140);  // ori r5, r9, 0x140: callback
++  PutWord(text, 0x20, 0x3D008100);  // lis r8, 0x8100
++  PutWord(text, 0x24, Branch(0x24, 0x180) | 1);  // bl callee
++  PutWord(text, 0x28, 0x38E80160);  // addi r7, r8, 0x160: clobbered by the call
++  PutWord(text, 0x2C, 0x3D808100);  // lis r12, 0x8100
++  PutWord(text, 0x30, 0x398C01A0);  // addi r12, r12, 0x1A0: pointer data
++  PutWord(text, 0x34, 0x4E800020);  // blr
++
++  // Every candidate follows an unconditional branch, so only the reference
++  // decides whether it becomes a function.
++  for (uint32_t start : {0x100u, 0x120u, 0x140u, 0x160u, 0x1A0u, 0x1C0u})
++    PutWord(text, start - 4, Branch(start - 4, 0x180));
++  PutWord(text, 0x100, 0x3D608100);  // lis r11, 0x8100
++  PutWord(text, 0x104, 0x386B01C0);  // addi r3, r11, 0x1C0: returns a function
++  PutWord(text, 0x108, 0x4E800020);  // blr
++  PutWord(text, 0x120, 0x4E800020);  // blr
++  PutWord(text, 0x140, 0x4E800020);  // blr
++  PutWord(text, 0x160, 0x4E800020);  // blr
++  PutWord(text, 0x180, 0x4E800020);  // blr
++  PutWord(text, 0x1A0, kText + 0x180);  // switch-like table of code addresses
++  PutWord(text, 0x1A4, kText + 0x100);
++  PutWord(text, 0x1C0, 0x4E800020);  // blr
++
++  auto ctx = Analyze(text);
++  for (uint32_t offset : {0x100u, 0x140u, 0x1C0u}) {
++    INFO("offset 0x" << std::hex << offset);
++    auto* node = ctx->graph.getFunction(kText + offset);
++    REQUIRE(node != nullptr);
++    CHECK(node->authority() == FunctionAuthority::DISCOVERED);
++    CHECK_FALSE(node->canDiscover());
++  }
++  for (uint32_t offset : {0x120u, 0x160u, 0x1A0u}) {
++    INFO("offset 0x" << std::hex << offset);
++    CHECK_FALSE(ctx->graph.isEntryPoint(kText + offset));
++  }
++}
++
++TEST_CASE("Code address references do not split existing code",
++          "[codegen][code_address]") {
++  std::vector<uint8_t> text(0x100);
++  PutWord(text, 0x00, 0x3D608100);  // lis r11, 0x8100
++  PutWord(text, 0x04, 0x386B0010);  // addi r3, r11, 0x10: own internal block
++  PutWord(text, 0x08, 0x41820008);  // beq 0x10
++  PutWord(text, 0x0C, Branch(0x0C, 0x14));  // b 0x14
++  PutWord(text, 0x10, 0x38600001);  // li r3, 1
++  PutWord(text, 0x14, 0x3D608100);  // lis r11, 0x8100
++  PutWord(text, 0x18, 0x2C030000);  // cmpwi r3, 0
++  PutWord(text, 0x1C, 0x386B0024);  // addi r3, r11, 0x24: conditional fallthrough
++  PutWord(text, 0x20, 0x4D820020);  // beqlr
++  PutWord(text, 0x24, 0x4E800020);  // blr
++
++  auto ctx = Analyze(text);
++  CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x10));
++  CHECK_FALSE(ctx->graph.isEntryPoint(kText + 0x24));
++  CHECK(ctx->graph.getFunctionContaining(kText + 0x10)->base() == kText);
++  CHECK(ctx->graph.getFunctionContaining(kText + 0x24)->base() == kText);
++}
 diff --git a/tests/unit/codegen/function_pointer_table_test.cpp b/tests/unit/codegen/function_pointer_table_test.cpp
 new file mode 100644
 index 0000000..68079d0
