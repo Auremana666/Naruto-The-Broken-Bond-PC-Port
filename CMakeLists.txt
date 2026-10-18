@@ -8,6 +8,13 @@ project(broken_bond LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The isolated host build has no dependency on generated guest code or the SDK.
+# It is also available through tools/native-renderer/isolated as a standalone build.
+option(BROKENBOND_BUILD_NATIVE_BACKEND "Build the isolated native backend validation harness" OFF)
+if(BROKENBOND_BUILD_NATIVE_BACKEND)
+    add_subdirectory(tools/native-renderer/isolated)
+endif()
+
 include(generated/rexglue.cmake)
 
 # Sources
