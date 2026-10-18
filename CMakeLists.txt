@@ -26,3 +26,8 @@ rexglue_setup_target(broken_bond GPU_PLUGINS xenos)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_link_options(broken_bond PRIVATE -Xlinker /DEBUG)
 endif()
+
+option(BROKENBOND_BUILD_LAUNCHER "Build the Windows launcher" ${WIN32})
+if(BROKENBOND_BUILD_LAUNCHER)
+    add_subdirectory(launcher)
+endif()
