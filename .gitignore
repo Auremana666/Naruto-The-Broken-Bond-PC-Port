@@ -23,3 +23,18 @@
 /.vscode/
 Thumbs.db
 .DS_Store
+AGENTS.md
+
+# Native renderer study outputs and game-derived shader data
+__pycache__/
+*.pyc
+*.sdb
+*.bf
+*.sra
+*.bik
+/src/gpu/shaders/pipeline_cache.inc
+/tools/xenosrecomp/thirdparty/dxc-bin/
+/tools/xenosrecomp/thirdparty/fmt/
+/tools/xenosrecomp/thirdparty/smol-v/
+/tools/xenosrecomp/thirdparty/xxHash/
+/tools/xenosrecomp/thirdparty/zstd/
