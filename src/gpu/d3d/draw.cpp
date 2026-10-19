@@ -283,7 +283,7 @@ std::atomic<uint64_t> own_draws{0};
 std::atomic<uint64_t> start_draws{0};  // Own draws with the shaders of the START lot.
 std::atomic<uint64_t> start_first_swap{0};  // Own Swaps before the first draw with the START shaders.
 std::atomic<bool> draw_capture_recorded{false};
-std::atomic<uint32_t> instanced_draw_records{0};
+std::atomic<uint32_t> instanced_draw_records{0}, indirect_draw_records{0};  // The first 8 of each.
 
 // Runs an original whose packets must reach no consumer, as BeginVertices
 // does with its commit: cursor +48, segment end +52 and soft limit +56 point
@@ -1062,7 +1062,13 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   // title is instance i / y and mesh vertex x + i % y, x = g_vInstanceParams.x.
   // So the draw indexes one instance from base vertex x, and the instance
   // streams step per instance. Only whole instances of a DrawVertices list.
+  // An indirect layout (ClassifyIndirectStreams) fetches the mesh vertex at
+  // the value its index stream holds for mesh vertex x + i % y: the y values
+  // from x are the instance's index buffer, so the mesh streams are read from
+  // base vertex 0. Only triangle lists: a quad list would need the values in
+  // quad order.
   const bool instanced = layout.instance_params >= 0;
+  const bool indirect = layout.indirect_fetch >= 0;
   uint32_t instance_vertices = 0;
   int32_t instance_base = 0;
   if (instanced) {
@@ -1073,18 +1079,49 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
     }
     const uint32_t primitive_vertices = c.primitive == 13 ? 4 : c.primitive == 4 ? 3 : 0;
     if (indexed || quad || start_vertex || !primitive_vertices || !instance_vertices ||
-        index_count % instance_vertices || instance_vertices % primitive_vertices) {
+        index_count % instance_vertices || instance_vertices % primitive_vertices || (indirect && c.primitive != 4)) {
       guard("vertex-instancing-uncovered", fmt::format(
-          "\"indexed\":{},\"primitive\":{},\"start_vertex\":{},\"index_count\":{},\"instance_params\":[{},{}]",
-          indexed, c.primitive, start_vertex, index_count, JsonFloat(x), JsonFloat(y)));
+          "\"indexed\":{},\"primitive\":{},\"start_vertex\":{},\"index_count\":{},\"instance_params\":[{},{}],"
+          "\"indirect\":{}", indexed, c.primitive, start_vertex, index_count, JsonFloat(x), JsonFloat(y), indirect));
       instance_vertices = 0;
     }
     request.instance_count = instance_vertices ? index_count / instance_vertices : 1;
   }
+  const int32_t mesh_base = indirect ? 0 : instance_base;  // The base vertex of the mesh streams.
   // The vertices the inline indices of DrawVertices cover: one instance, from 0.
   const uint32_t vertex_count = instance_vertices ? instance_vertices : index_count;
   const uint32_t first_vertex = instanced ? 0 : start_vertex;
-  if (indexed) {
+  if (indirect) {
+    // The index stream (one dword per vertex at offset 0, ParseVertexElements)
+    // from mesh vertex x, an index entry of the buffer registry (BindBuffer),
+    // which gives the largest value for the mesh streams' reads.
+    const uint32_t f = uint32_t(layout.indirect_fetch);
+    const std::array<uint32_t, 6>& words = FetchConstantSlot(f / 3);
+    const uint32_t d0 = words[2 * (f % 3)], d1 = words[2 * (f % 3) + 1];
+    const uint32_t address = d0 & ~3u, size = ((d1 >> 2) & 0xFFFFFF) * 4;
+    t.index_endian = d1 & 3;
+    t.index_physical = address + uint32_t(instance_base) * 4;
+    const auto indirect_record = [&](std::string_view why) {
+      return fmt::format("\"fetch\":{},\"address\":{},\"bytes\":{},\"endian\":{},\"instance_params\":[{},{}],"
+                         "\"why\":\"{}\"", f, address, size, t.index_endian, JsonFloat(c.instance_params[0]),
+                         JsonFloat(c.instance_params[1]), why);
+    };
+    if ((d0 & 3) != 3 || t.index_endian != 2 || (uint64_t(instance_base) + instance_vertices) * 4 > size)
+      guard("vertex-indirect-uncovered", indirect_record("fetch-constant"));
+    const BufferKey key{t.index_physical, instance_vertices * 4, uint8_t(t.index_endian), 1, 1};
+    BufferUse use;
+    std::string why;
+    if (!BindBuffer(base, key, key.bytes, bind_swap, use, why)) guard("vertex-indirect-uncovered", indirect_record(why));
+    request.index32 = true;
+    request.index_count = instance_vertices;
+    max_index = use.max_index;
+    if (use.hosted) {
+      request.index_key = use.key;
+      request.index_offset = use.offset;
+    } else {
+      request.indices = std::move(use.data);
+    }
+  } else if (indexed) {
     const uint32_t ib = c.ib;
     if (!ib) guard("index-buffer-unbound", shaders_record);
     const uint32_t ib_common = c.ib_common;
@@ -1138,7 +1175,7 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
     }
   }
   const uint32_t index_size = request.index32 ? 4 : 2;
-  if (!indexed) {  // The inline indices of the quad and of DrawVertices.
+  if (!indexed && !indirect) {  // The inline indices of the quad and of DrawVertices.
     for (uint32_t i = 0; i < request.index_count; ++i) {
       uint32_t v = 0;
       std::memcpy(&v, &request.indices[size_t(i) * index_size], index_size);
@@ -1196,7 +1233,7 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
     auto& stream = request.streams[slot];
     const bool per_instance = instanced && slot < layout.stream_per_instance.size() && layout.stream_per_instance[slot];
     const uint64_t needed = per_instance ? uint64_t(request.instance_count) * stream.stride
-                                         : uint64_t(int64_t(max_index) + base_vertex + instance_base + 1) * stream.stride;
+                                         : uint64_t(int64_t(max_index) + base_vertex + mesh_base + 1) * stream.stride;
     StreamNote& note = stream_notes.emplace_back(StreamNote{f, address, size, endian, stream.stride, needed, -1});
     if ((d0 & 3) != 3 || int64_t(max_index) + base_vertex < 0 || needed > size || needed > 0x400000 ||
         size > kBufferBytesMax) {
@@ -1225,12 +1262,13 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
     }
   }
   if (quad && t.quad_slot == UINT32_MAX) guard("inline-fetch-unused", fmt::format("\"streams\":[{}]", streams_text()));
-  if (instanced && instanced_draw_records.fetch_add(1) < 8)
+  if (instanced && (indirect ? indirect_draw_records : instanced_draw_records).fetch_add(1) < 8)
     host::Record("native-d3d-instanced-draw", fmt::format(
         "\"vs\":\"{}\",\"index_count\":{},\"instance_params\":[{},{}],\"instances\":{},\"instance_vertices\":{},"
-        "\"indices\":{},\"base_vertex\":{},\"streams\":[{}]", vs_cached->name, index_count,
-        JsonFloat(c.instance_params[0]), JsonFloat(c.instance_params[1]), request.instance_count, instance_vertices,
-        request.index_count, base_vertex + instance_base, streams_text()));
+        "\"indices\":{},\"base_vertex\":{},\"indirect\":{},\"max_index\":{},\"first_indices\":[{}],\"streams\":[{}]",
+        vs_cached->name, index_count, JsonFloat(c.instance_params[0]), JsonFloat(c.instance_params[1]),
+        request.instance_count, instance_vertices, request.index_count, base_vertex + mesh_base, indirect, max_index,
+        index_record.get(), streams_text()));
   // The descriptor of each element (vfetchNaruto) at c20..c23 of the
   // shared constants, the streams as read: no expansion on the CPU. A 16-bit
   // pair after the 8in32 swap arrives as (Y, X) and takes the 8in32
@@ -1248,7 +1286,7 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   }
   std::memcpy(&request.shared_constants[260], &swapped_texcoords, 4);
   streams_time.Stop();
-  request.base_vertex = base_vertex + instance_base;
+  request.base_vertex = base_vertex + mesh_base;
   // D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: the quad and the quad list of DrawVertices as a list.
   if (c.primitive == 4 || quad || (c.primitive == 13 && !indexed)) request.topology = 4;
   else if (c.primitive == 6) request.topology = 5;  // D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
@@ -1516,7 +1554,7 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
         uint32_t v = 0;
         if (size_t(k + 1) * index_size <= request.indices.size())
           std::memcpy(&v, &request.indices[size_t(k) * index_size], index_size);
-        else if (!indexed || !guest_word(t.index_physical + k * index_size, index_size, t.index_endian, v))
+        else if ((!indexed && !indirect) || !guest_word(t.index_physical + k * index_size, index_size, t.index_endian, v))
           break;
         std::string words;
         for (size_t i = 0; i < trace_elements.size(); ++i) {

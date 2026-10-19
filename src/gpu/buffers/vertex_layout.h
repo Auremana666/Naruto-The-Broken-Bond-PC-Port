@@ -46,6 +46,10 @@ struct VertexLayout {
   // per instance) when elements read per-instance data; -1 otherwise.
   int32_t instance_params = -1;
   std::vector<bool> stream_per_instance;  // Per slot, with instance_params.
+  // The indirect instancing shaders (ClassifyIndirectStreams): the fetch
+  // constant of the 32-bit stream whose values index the mesh, read as the
+  // draw's index buffer; -1 otherwise.
+  int32_t indirect_fetch = -1;
   std::vector<uint32_t> patched_code;  // The microcode with the fetch words of the declaration (START policy).
   std::string elements_record, patch_record;
 };

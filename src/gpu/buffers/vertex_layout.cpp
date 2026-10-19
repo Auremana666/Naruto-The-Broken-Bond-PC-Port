@@ -192,14 +192,13 @@ std::atomic<uint32_t> fetch_index_records{0};
 // every element from the input assembler, so those streams become
 // per-instance data of a D3D12 instanced draw (TranslateDraw).
 //
-// The mesh index is the index of the POSITION0 fetch. An offline pass over
-// every vertex shader container of the title (prologue of the translated
-// HLSL, fetch words of the microcode; 2026-10-18) found the multiply-add
-// writing the POSITION0 index in all 29 shaders with two index registers:
-// r0.x in 27, r1.y in vs-002256BC and r1.x in vs-00225B92. vs-0026BCA5 fetches
-// POSITION0 and TEXCOORD0 through an index it reads from a per-vertex stream
-// (POSITION1.x), which instancing cannot express: with three index registers
-// it keeps the per-vertex input of before, recorded, as any other layout.
+// In 18 of them the mesh index is the index of the POSITION0 fetch: an
+// offline pass over every vertex shader container of the title (prologue of
+// the translated HLSL, fetch words of the microcode; 2026-10-18) found the
+// multiply-add writing it, r0.x in 16, r1.y in vs-002256BC and r1.x in
+// vs-00225B92. The other 12 fetch their mesh through a stream read at the mesh
+// index (ClassifyIndirectStreams). A layout with fetch indices this cannot
+// express fails, instead of drawing every stream per vertex.
 void ClassifyInstanceStreams(uint8_t* base, const BoundShader& vs, const std::vector<uint32_t>& element_index,
                              VertexLayout& L) {
   constexpr uint32_t kVertexIndex = 0;  // r0.x as (register << 2 | component).
@@ -221,20 +220,107 @@ void ClassifyInstanceStreams(uint8_t* base, const BoundShader& vs, const std::ve
     slot = kind;
   }
   if (!covered) {
-    if (fetch_index_records.fetch_add(1) < 8) {
-      std::string indices;
-      for (const uint32_t i : element_index)
-        indices += fmt::format("{}\"r{}.{}\"", indices.empty() ? "" : ",", i >> 2, "xyzw"[i & 3]);
-      host::Record("native-d3d-vertex-fetch-index", fmt::format(
-          "\"vs_object\":{},\"instance_params\":{},\"indices\":[{}],\"elements\":[{}]", vs.object, params, indices,
-          L.elements_record));
-    }
+    std::string indices;
+    for (const uint32_t i : element_index)
+      indices += fmt::format("{}\"r{}.{}\"", indices.empty() ? "" : ",", i >> 2, "xyzw"[i & 3]);
+    L.ok = false;
+    L.reason = "vertex-fetch-index-uncovered";
+    L.detail = fmt::format("\"instance_params\":{},\"indices\":[{}],\"elements\":[{}]", params, indices,
+                           L.elements_record);
     return;
   }
   L.instance_params = params;
   for (const int kind : slot_kind) L.stream_per_instance.push_back(kind == 1);
   for (size_t i = 0; i < L.elements.size(); ++i) {
     if (element_index[i] == mesh_index) continue;
+    L.elements[i].instance_step = 1;
+    L.legacy_elements[i].instance_step = 1;
+  }
+}
+// The role of a fetch in an indirect layout (FindIndirectFetches).
+enum class FetchRole : uint8_t { kDirect, kSource, kIndirect };
+// The 12 vertex shaders of the title that fetch their mesh through a stream:
+// a k_32 POSITION1 read at the mesh index holds, per mesh vertex, the index of
+// the vertex that POSITION0 and TEXCOORD0 (and COLOR1 in three of them) are
+// fetched at, and the instance data is read at the instance index. An offline
+// pass over the 2429 vertex shader containers and the translated HLSL
+// (2026-10-19) found no other, and in each the POSITION1 value is overwritten
+// before any use, so the input assembler may deliver anything for it. That
+// cannot be proved at run time, so only these names take the layout.
+constexpr std::array<std::string_view, 12> kIndirectShaders{
+    "vs-00115146", "vs-0015E0E2", "vs-0019DDED", "vs-002114E7", "vs-0021241D", "vs-00224230",
+    "vs-0023B4F8", "vs-002600E4", "vs-0026BCA5", "vs-0027699A", "vs-002C1CCF", "vs-00618CDC"};
+// The indirect fetches of a block, in the patched order (the patch may move
+// fetches, so the template order proves nothing): a fetch whose index is a
+// register component an earlier fetch wrote. Covered when one source fetch,
+// itself indexed by a value no fetch wrote, writes one component that indexes
+// every indirect fetch, and the other fetches share one index no fetch wrote.
+// Returns false when the block has indirect fetches outside that pattern;
+// roles stays all kDirect when it has none.
+template <class Fetches>
+bool FindIndirectFetches(const Fetches& fetches, std::vector<FetchRole>& roles) {
+  roles.assign(fetches.size(), FetchRole::kDirect);
+  std::array<int, 64 * 4> writer;  // The fetch that last wrote each register component (register << 2 | component).
+  writer.fill(-1);
+  int source = -1, full_writer = -1;
+  bool covered = true, relative = false;
+  for (size_t i = 0; i < fetches.size(); ++i) {
+    const auto& p = fetches[i];
+    // A mini fetch takes the address of the full fetch before it.
+    const int w = p.mini ? full_writer : writer[p.index & 0xFF];
+    if (!p.mini) full_writer = w;
+    if (w >= 0) {
+      if (source < 0) source = w;
+      covered = covered && w == source;
+      roles[i] = FetchRole::kIndirect;
+    }
+    relative = relative || ((p.w0 >> 18) & 1);  // Destination relative to aL: unknown components.
+    const uint32_t destination = (p.w0 >> 12) & 0x3F;
+    for (unsigned c = 0; c < 4; ++c)
+      if (((p.w1 >> (3 * c)) & 7) != 7) writer[destination << 2 | c] = int(i);
+  }
+  if (source < 0) return true;
+  uint32_t written = 0;
+  for (unsigned c = 0; c < 4; ++c) written += ((fetches[source].w1 >> (3 * c)) & 7) != 7;
+  covered = covered && !relative && written == 1 && roles[source] == FetchRole::kDirect && !fetches[source].mini;
+  roles[source] = FetchRole::kSource;
+  uint32_t instance_index = UINT32_MAX;
+  for (size_t i = 0; covered && i < fetches.size(); ++i) {
+    if (roles[i] != FetchRole::kDirect) continue;
+    if (instance_index != UINT32_MAX && fetches[i].index != instance_index) covered = false;
+    instance_index = fetches[i].index;
+  }
+  return covered && instance_index != UINT32_MAX && instance_index != fetches[source].index;
+}
+// An indirect layout: the indirect elements are the mesh, per vertex at the
+// source's values, which the draw binds as its index buffer; the direct ones
+// are the instance data. The source keeps an input for the shader's signature
+// on the first mesh slot, offset 0 (its value is unused, kIndirectShaders).
+void ClassifyIndirectStreams(uint8_t* base, const BoundShader& vs, const std::vector<FetchRole>& element_role,
+                             size_t source, VertexLayout& L) {
+  const int32_t params = FindFloatConstant(base, vs, "g_vInstanceParams");
+  std::vector<int> slot_kind(L.stream_fetch.size(), -1);  // 0 per vertex, 1 per instance.
+  bool covered = params >= 0;
+  for (size_t i = 0; covered && i < L.elements.size(); ++i) {
+    if (i == source) continue;
+    const int kind = element_role[i] == FetchRole::kDirect;
+    int& slot = slot_kind[L.elements[i].slot];
+    if (slot >= 0 && slot != kind) covered = false;
+    slot = kind;
+  }
+  const auto mesh_slot = std::find(slot_kind.begin(), slot_kind.end(), 0);
+  if (!covered || mesh_slot == slot_kind.end()) {
+    L.ok = false;
+    L.reason = "vertex-fetch-indirect-uncovered";
+    L.detail = fmt::format("\"instance_params\":{},\"elements\":[{}]", params, L.elements_record);
+    return;
+  }
+  L.instance_params = params;
+  for (const int kind : slot_kind) L.stream_per_instance.push_back(kind == 1);
+  const uint32_t slot = uint32_t(mesh_slot - slot_kind.begin());
+  L.elements[source].slot = L.legacy_elements[source].slot = L.fetch[source].slot = slot;
+  for (size_t i = 0; i < L.elements.size(); ++i) {
+    if (element_role[i] != FetchRole::kDirect) continue;
     L.elements[i].instance_step = 1;
     L.legacy_elements[i].instance_step = 1;
   }
@@ -290,8 +376,17 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     last_index = p.index;
     patched_fetches.push_back(p);
   }
+  std::vector<FetchRole> roles;  // Per patched fetch.
+  const std::string_view cache_name = cached ? std::string_view(cached->name) : std::string_view();
+  if (!FindIndirectFetches(patched_fetches, roles))
+    return fail("vertex-fetch-indirect-uncovered", fmt::format("\"cache\":\"{}\",\"pattern\":false", cache_name));
+  if (std::find(roles.begin(), roles.end(), FetchRole::kSource) != roles.end() &&
+      std::find(kIndirectShaders.begin(), kIndirectShaders.end(), cache_name) == kIndirectShaders.end())
+    return fail("vertex-fetch-indirect-uncovered", fmt::format("\"cache\":\"{}\",\"pattern\":true", cache_name));
   const std::vector<uint32_t>& template_code = cached ? cached->code : vs.code;
   std::vector<uint32_t> element_index;  // The fetch index of each element, in the order of elements.
+  std::vector<FetchRole> element_role;  // And its role in an indirect layout.
+  size_t source_element = 0;
   for (const auto& [address, value] : ordered) {
     const uint32_t usage = (value >> 12) & 0xF, usage_index = (value >> 16) & 0xF;
     if (usage >= 14 || 3 * address + 2 >= template_code.size())
@@ -322,7 +417,10 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
                                                              destination, matches));
     const uint32_t w0 = match->w0, w1 = match->w1, w2 = match->w2, fetch = match->fetch, stride = match->stride;
     const bool mini = match->mini;
+    const FetchRole role = roles[size_t(match - patched_fetches.data())];
+    const bool source = role == FetchRole::kSource;
     element_index.push_back(match->index);
+    element_role.push_back(role);
     const uint32_t xenos_format = (w1 >> 16) & 0x3F;
     const bool is_signed = (w1 >> 12) & 1, integer = (w1 >> 13) & 1;
     const bool half_pairs = xenos_format == 25 || xenos_format == 26 || xenos_format == 31 || xenos_format == 32;
@@ -349,12 +447,18 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     // The decode of the element.
     VertexFetch vf;
     vf.address = address;
-    vf.components = FetchComponents(xenos_format);
+    vf.components = source ? 1 : FetchComponents(xenos_format);
     vf.patched_swizzle = w1 & 0xFFF;
     bool covered = vf.components != 0;
     uint32_t selectors = 0;
     bool dec3n = false;
-    if (UintUsage(usage)) {  // NORMAL, TANGENT, BINORMAL.
+    if (source) {
+      // The index stream of an indirect layout, read by the draw as its index
+      // buffer: k_32, unsigned, integer, one dword at offset 0 (below). The
+      // shader's input of it is unused; vfetchNaruto decodes k_32 as zero.
+      covered = xenos_format == 33 && !is_signed && integer && plain;
+      selectors = DefaultSelectors(1, 4);
+    } else if (UintUsage(usage)) {  // NORMAL, TANGENT, BINORMAL.
       if (dec3) {
         selectors = Selectors(0, 1, 2, 3);
       } else if (xenos_format == 16) {  // DEC3N (XenosRecomp's tfetchR11G11B10); w 0.
@@ -394,7 +498,7 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     vf.descriptor = FetchDescriptor(xenos_format, is_signed, integer, dec3n, selectors);
     vf.descriptor_8in32 = vf.by_endian ? FetchDescriptor(xenos_format, is_signed, integer, dec3n, vf.descriptor_8in32)
                                        : vf.descriptor;
-    const uint32_t offset = (w2 >> 8) & 0x7FFFFF, bytes = FetchBytes(xenos_format);
+    const uint32_t offset = (w2 >> 8) & 0x7FFFFF, bytes = source ? 4 : FetchBytes(xenos_format);
     const uint32_t format = covered ? RawVertexFormat(bytes) : 0;
     L.elements_record += fmt::format("{}{{\"usage\":{},\"index\":{},\"address\":{},\"fetch\":{},\"xenos_format\":{},"
         "\"dxgi\":{},\"legacy_dxgi\":{},\"descriptor\":{},\"stride_words\":{},\"offset_words\":{},\"mini\":{},"
@@ -404,6 +508,18 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
       return fail("vertex-fetch-uncovered", fmt::format("\"elements\":[{}]", L.elements_record));
     if (4 * offset + bytes > 4 * stride)
       return fail("vertex-element-beyond-stride", fmt::format("\"elements\":[{}]", L.elements_record));
+    if (source) {
+      if (stride != 1 || offset)
+        return fail("vertex-fetch-indirect-uncovered", fmt::format("\"elements\":[{}]", L.elements_record));
+      // No stream slot of its own (ClassifyIndirectStreams).
+      L.indirect_fetch = int32_t(fetch);
+      source_element = L.elements.size();
+      L.elements.push_back({kSemantics[usage], usage_index, format, 0, 0});
+      L.legacy_elements.push_back({kSemantics[usage], usage_index, legacy, 0, 0});
+      L.legacy_ok = false;
+      L.fetch.push_back(vf);
+      continue;
+    }
     auto slot_it = std::find(L.stream_fetch.begin(), L.stream_fetch.end(), fetch);
     uint32_t slot = uint32_t(slot_it - L.stream_fetch.begin());
     if (slot_it == L.stream_fetch.end()) {
@@ -418,7 +534,8 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     L.legacy_ok = L.legacy_ok && legacy && !legacy_expanded;
     L.fetch.push_back(vf);
   }
-  ClassifyInstanceStreams(base, vs, element_index, L);
+  if (L.indirect_fetch >= 0) ClassifyIndirectStreams(base, vs, element_role, source_element, L);
+  else ClassifyInstanceStreams(base, vs, element_index, L);
 }
 // The cached DXIL comes from the template microcode of the SDB, whose fetch
 // keeps the identity destination swizzle (0x688); the runtime patch 821B6018
