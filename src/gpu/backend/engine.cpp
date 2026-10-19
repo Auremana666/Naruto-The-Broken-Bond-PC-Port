@@ -649,13 +649,24 @@ bool Engine::Initialize(std::string& evidence, const RenderMode& mode) {
     result = device->d3d->QueryInterface(IID_PPV_ARGS(&state_->info));
     if (FAILED(result)) return fail("D3D12-info-queue", result);
   }
-  D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_6};
-  result = device->d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model));
-  if (FAILED(result) || model.HighestShaderModel < D3D_SHADER_MODEL_6_6)
-    return fail("Shader-model-6.6", result);
+  // The shaders are vs_6_0 and ps_6_0 without optional features. A runtime
+  // that does not know a newer model (Windows 10 stops at 6.5) answers
+  // E_INVALIDARG, so the query steps down to one it knows.
+  D3D12_FEATURE_DATA_SHADER_MODEL model{};
+  for (auto highest : {D3D_SHADER_MODEL_6_6, D3D_SHADER_MODEL_6_5, D3D_SHADER_MODEL_6_4, D3D_SHADER_MODEL_6_3,
+                       D3D_SHADER_MODEL_6_2, D3D_SHADER_MODEL_6_1, D3D_SHADER_MODEL_6_0}) {
+    model.HighestShaderModel = highest;
+    result = device->d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model));
+    if (result != E_INVALIDARG) break;
+  }
+  if (FAILED(result) || model.HighestShaderModel < D3D_SHADER_MODEL_6_0)
+    return fail("Shader-model-6.0", result);
   D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
   result = device->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
   if (FAILED(result)) return fail("D3D12-options", result);
+  // The texture and sampler tables of the draw root signature are unbounded
+  // (EnsureDrawLayer).
+  if (options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2) return fail("Resource-binding-tier-2");
   for (auto format : {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8_UNORM}) {
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format};
     result = device->d3d->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support));
@@ -743,7 +754,7 @@ bool Engine::Initialize(std::string& evidence, const RenderMode& mode) {
   evidence = fmt::format("{{\"backend\":\"Plume/D3D12\",\"device_vendor\":{},\"device_id\":{},"
       "\"adapter_luid_low\":{},\"adapter_luid_high\":{},\"adapter_description\":\"{}\",\"adapter_revision\":{},"
       "\"adapter_subsys\":{},\"driver_umd_version\":{},\"driver_umd_hresult\":{},\"shader_model\":{},"
-      "\"shader_model_6_6\":true,\"binding_tier\":{},"
+      "\"binding_tier\":{},"
       "\"rgba8_render_blend\":true,\"r8_sample\":true,\"direct_queue\":true,\"fence_signal\":{},"
       "\"fence_completed\":{},\"debug_messages\":0,\"debug_layer\":{},\"guest_completion\":false,\"presentation\":false{}{}}}",
       adapter.VendorId, adapter.DeviceId, adapter.AdapterLuid.LowPart, adapter.AdapterLuid.HighPart, adapter_name,
