@@ -5,8 +5,9 @@
 // submits it through F530, 8219EE40 switches the ring segment and waits for the
 // previous frame fence (+14940), 821C0900 retrains EDRAM, and VdSwap writes the
 // flip into the ring. The own Swap ports the CPU effects of the original in its
-// order, for the path the title takes (no parameters, no writeback slots
-// (+21632), no vblank wait (+23980 bit 2)):
+// order, for the path the title takes (no parameters, no vblank wait (+23980
+// bit 2), and the writeback slots (+21632) left out, as no reader exists
+// without the debug monitor):
 //   - +16560 += 1 and the front-buffer header copy (52 bytes at +14844);
 //   - 821BB4A0 (debug path) runs original;
 //   - presentation is own: the front buffer is read back as frame evidence
@@ -311,7 +312,16 @@ REX_HOOK_RAW(sub_821B1DD0) {
   // Not covered: without the census these are not read (the own limiter
   // paces the frames).
   if (params) UncoveredOperation(ctx, "Swap-parameters-uncovered");
-  if (Get32(base, dev + 21632)) UncoveredOperation(ctx, "Swap-writeback-slots-uncovered");
+  // +21632 turns on D3D's GPU timestamp ring (slots 16..23 of the block at
+  // +10896, indices +21624/+21628), which the original Swap feeds with event
+  // packets. Only the debug monitor's statistics read it: 821BF578, behind
+  // flag 0x20 of 826013B0, which asks the interface rooted at 82000850, and
+  // 821BF9C8, under command 255 of 821C00C0, a command of that interface (REA/
+  // IDA, 2026-10-19). Without the interface nothing reads the ring, so the own
+  // Swap leaves it out; with it (the chains checked below), it is uncovered.
+  const uint32_t debug_root = Get32(base, 0x82000850);
+  if (Get32(base, dev + 21632) && debug_root && Get32(base, debug_root))
+    UncoveredOperation(ctx, "Swap-writeback-slots-uncovered");
   if (Get32(base, 0x833A37C8)) UncoveredOperation(ctx, "Swap-global-flush-uncovered");
   if (Get32(base, dev + 23980) & 4) UncoveredOperation(ctx, "Swap-vblank-wait-uncovered");
   // The START lot stops the render thread at its fifth draw. Seven own
