@@ -62,10 +62,17 @@ inline uint32_t GuestPhysicalAlias(uint32_t address) { return (((address >> 20) 
 // Plain copies from and into guest memory, as the title's own loads and
 // stores; ReadProcessMemory and WriteProcessMemory would make a system call
 // at every access. An address without memory faults into the __except and
-// fails.
+// fails. Clang without asynchronous exceptions catches only the faults raised
+// inside a call of the __try body, not by its own loads and stores (an inlined
+// memcpy of an unmapped page ended the process), so the copies run in
+// functions that are never inlined.
+__declspec(noinline) inline void GuestCopy(void* out, const void* in, size_t size) { std::memcpy(out, in, size); }
+__declspec(noinline) inline bool GuestEqual(const void* a, const void* b, size_t size) {
+  return std::memcmp(a, b, size) == 0;
+}
 inline bool CopyFromGuest(void* out, const uint8_t* host, size_t size) {
   __try {
-    std::memcpy(out, host, size);
+    GuestCopy(out, host, size);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
@@ -73,8 +80,8 @@ inline bool CopyFromGuest(void* out, const uint8_t* host, size_t size) {
 }
 inline bool CopyToGuest(uint8_t* host, const uint8_t* bytes, size_t size) {
   __try {
-    std::memcpy(host, bytes, size);
-    return std::memcmp(host, bytes, size) == 0;
+    GuestCopy(host, bytes, size);
+    return GuestEqual(host, bytes, size);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
