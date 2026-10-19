@@ -11,6 +11,7 @@
 #include "gpu/buffers/buffers.h"
 #include "gpu/textures/textures.h"
 #include "gpu/common/guest_memory.h"
+#include "gpu/common/title_loading.h"
 #include "gpu/host/services.h"
 #include "gpu/backend/dispatcher.h"
 #include "gpu/diagnostics/profile.h"
@@ -57,7 +58,6 @@ using namespace gpu;
 namespace gpu {
 int64_t MeasureSwaps() {
   static const int64_t value = [] {
-    if (!Diagnostics()) return int64_t(0);
     const char* text = std::getenv("REX_NATIVE_MEASURE_SWAPS");
     if (!text || !*text) return int64_t(0);
     const long n = std::atol(text);
@@ -159,17 +159,21 @@ void PacingAtSwap(PPCContext& ctx, uint8_t* base, uint32_t dev, bool own) {
 }
 
 // The measurement mode (MeasureSwaps). At each own Swap entry the frame that
-// just closed is sampled: the interval since the previous entry, own and START
-// draws, and the profile slots, taken and reset. Frames are kept once START
-// content has begun; at MeasureSwaps() frames they are written with integers
+// just closed is sampled: the interval since the previous entry, the own
+// draws, whether a loading screen was up, and the profile slots, taken and
+// reset. Frames are kept from the first Swap after the title's first loading
+// screen hid (the title screen; Rise waited for its START lot, which Broken
+// Bond does not draw). At MeasureSwaps() frames they are written with integers
 // only to REX_NATIVE_FRAME_DIR/measure-frames.json, summarized in the journal
-// (the first 300 frames are warm-up), and the render thread stops in order.
+// (the first 300 frames are warm-up, and frames under a loading screen stay in
+// the file only), and the render thread stops in order.
 struct MeasureFrame {
-  uint64_t interval_ns = 0, draws = 0, start_draws = 0;
+  uint64_t interval_ns = 0, draws = 0, loading = 0;
   std::array<uint64_t, profile::kCount> ns{}, calls{};
   std::array<uint64_t, profile::kCounterCount> counters{};
 };
 std::vector<MeasureFrame> measure_frames;  // Render thread only (own Swap).
+uint64_t measure_from_swap = 0;  // The Swap that closed the first kept frame; 0 before.
 constexpr size_t kMeasureWarmup = 300;
 uint64_t Percentile(std::vector<uint64_t> values, size_t percent) {
   if (values.empty()) return 0;
@@ -180,14 +184,14 @@ uint64_t Percentile(std::vector<uint64_t> values, size_t percent) {
 std::atomic<uint32_t> measure_thread{0};  // Host thread of MeasureAtSwap.
 bool OnMeasureThread() { return measure_thread.load(std::memory_order_relaxed) == GetCurrentThreadId(); }
 void MeasureAtSwap(PPCContext& ctx) {
-  static uint64_t previous = 0, previous_draws = 0, previous_start = 0;
+  static uint64_t previous = 0, previous_draws = 0;
   measure_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
   const uint64_t now = profile::Now();
   MeasureFrame f;
   f.interval_ns = previous ? now - previous : 0;
-  const uint64_t draws = own_draws.load(), start = start_draws.load();
+  const uint64_t draws = own_draws.load();
   f.draws = draws - previous_draws;
-  f.start_draws = start - previous_start;
+  f.loading = TitleLoading();
   for (unsigned i = 0; i < profile::kCount; ++i) {
     f.ns[i] = profile::slots[i].ns.exchange(0, std::memory_order_relaxed);
     f.calls[i] = profile::slots[i].calls.exchange(0, std::memory_order_relaxed);
@@ -204,11 +208,10 @@ void MeasureAtSwap(PPCContext& ctx) {
   }
   for (unsigned i = 0; i < profile::kCounterCount; ++i)
     f.counters[i] = profile::counters[i].exchange(0, std::memory_order_relaxed);
-  const bool content = previous && start;
+  if (!measure_from_swap && previous && title_loadings.load() && !f.loading) measure_from_swap = swaps.load() + 1;
   previous = now;
   previous_draws = draws;
-  previous_start = start;
-  if (!content) return;
+  if (!measure_from_swap) return;
   if (measure_frames.empty()) measure_frames.reserve(size_t(MeasureSwaps()));
   measure_frames.push_back(f);
   if (measure_frames.size() < size_t(MeasureSwaps())) return;
@@ -229,11 +232,11 @@ void WriteMeasureFrames(bool partial) {
   text += "],\"counters\":[";
   for (unsigned i = 0; i < profile::kCounterCount; ++i)
     text += fmt::format("{}\"{}\"", i ? "," : "", profile::kCounterNames[i]);
-  text += fmt::format("],\"partial\":{},\"columns\":\"interval_ns,draws,start_draws,slot ns...,slot calls...,counters...\","
+  text += fmt::format("],\"partial\":{},\"columns\":\"interval_ns,draws,loading,slot ns...,slot calls...,counters...\","
                       "\"frames\":[", partial);
   for (size_t k = 0; k < measure_frames.size(); ++k) {
     const auto& m = measure_frames[k];
-    text += fmt::format("{}[{},{},{},{},{},{}]", k ? ",\n" : "\n", m.interval_ns, m.draws, m.start_draws,
+    text += fmt::format("{}[{},{},{},{},{},{}]", k ? ",\n" : "\n", m.interval_ns, m.draws, m.loading,
                         fmt::join(m.ns, ","), fmt::join(m.calls, ","), fmt::join(m.counters, ","));
   }
   text += "]}\n";
@@ -251,14 +254,18 @@ void WriteMeasureFrames(bool partial) {
   const std::string samples_file = PacingSamples() && !pacing_written ? WritePacingSamples(true) : "null";
   const size_t warmup = measure_frames.size() > kMeasureWarmup ? kMeasureWarmup : 0;
   std::vector<uint64_t> intervals;
-  uint64_t content_frames = 0, minimum_draws = UINT64_MAX;
+  uint64_t loading_frames = 0, minimum_draws = UINT64_MAX, draw_sum = 0;
   std::array<uint64_t, profile::kCount> sums{};
   std::array<uint64_t, profile::kCounterCount> counter_sums{};
   for (size_t k = warmup; k < measure_frames.size(); ++k) {
     const auto& m = measure_frames[k];
+    if (m.loading) {
+      ++loading_frames;
+      continue;
+    }
     intervals.push_back(m.interval_ns);
-    content_frames += m.start_draws > 0;
     minimum_draws = std::min(minimum_draws, m.draws);
+    draw_sum += m.draws;
     for (unsigned i = 0; i < profile::kCount; ++i) sums[i] += m.ns[i];
     for (unsigned i = 0; i < profile::kCounterCount; ++i) counter_sums[i] += m.counters[i];
   }
@@ -270,15 +277,21 @@ void WriteMeasureFrames(bool partial) {
   for (unsigned i = 0; i < profile::kCounterCount; ++i)
     counter_means += fmt::format("{}\"{}\":{}", i ? "," : "", profile::kCounterNames[i],
                                  measured ? counter_sums[i] / measured : 0);
+  // The own cost of a draw: the hook on the title's thread, and the translation
+  // (on the stage when it is deferred).
+  const auto per_draw = [&](profile::Slot slot) { return draw_sum ? sums[slot] / draw_sum : 0; };
   host::Record("native-d3d-measure", fmt::format(
-      "\"partial\":{},\"frames\":{},\"warmup\":{},\"measured\":{},\"measured_with_start_draws\":{},\"minimum_draws\":{},"
-      "\"interval_us\":{{\"median\":{},\"p95\":{},\"max\":{}}},\"mean_us_per_frame\":{{{}}},"
-      "\"mean_count_per_frame\":{{{}}},\"file\":{},\"file_sha256\":{},\"swaps\":{},\"start_first_swap\":{},"
+      "\"partial\":{},\"frames\":{},\"warmup\":{},\"measured\":{},\"loading_frames\":{},\"minimum_draws\":{},"
+      "\"mean_draws\":{},\"draw_ns_per_draw\":{},\"translate_ns_per_draw\":{},"
+      "\"interval_us\":{{\"median\":{},\"p95\":{},\"p99\":{},\"max\":{}}},\"mean_us_per_frame\":{{{}}},"
+      "\"mean_count_per_frame\":{{{}}},\"file\":{},\"file_sha256\":{},\"swaps\":{},\"from_swap\":{},"
       "\"front_buffer_reads\":0,\"debug_layer_requested\":\"{}\",\"texture_integral_verify\":{},"
       "\"texture_uploads\":{},\"texture_binding_reuses\":{},\"pacing\":{{{}}},\"pacing_samples\":{},"
       "\"pacing_sample_count\":{},\"interrupts\":{},\"fences\":{},\"limiter\":{}", partial, measure_frames.size(), warmup, measured,
-      content_frames, measured ? minimum_draws : 0, Percentile(intervals, 50) / 1000, Percentile(intervals, 95) / 1000,
-      Percentile(intervals, 100) / 1000, means, counter_means, file, file_sha, swaps.load(), start_first_swap.load(),
+      loading_frames, measured ? minimum_draws : 0, measured ? draw_sum / measured : 0, per_draw(profile::kDraw),
+      per_draw(profile::kTranslate), Percentile(intervals, 50) / 1000, Percentile(intervals, 95) / 1000,
+      Percentile(intervals, 99) / 1000, Percentile(intervals, 100) / 1000, means, counter_means, file, file_sha,
+      swaps.load(), measure_from_swap,
       std::getenv("REX_NATIVE_D3D12_DEBUG") ? std::getenv("REX_NATIVE_D3D12_DEBUG") : "unset", TextureVerify(),
       texture_uploads.load(), texture_binding_reuses.load(), pacing_file,
       samples_file == "null" ? samples_file : "{" + samples_file + "}", pacing_samples.size(),

@@ -127,21 +127,26 @@ inline void Add(Slot slot, uint64_t ns) {
   slots[slot].ns.fetch_add(ns, std::memory_order_relaxed);
   slots[slot].calls.fetch_add(1, std::memory_order_relaxed);
 }
-// The profile runs with the diagnostic instruments (gpu::Diagnostics);
-// off, a timer or a count costs one test.
+// The profile runs with the diagnostic instruments (gpu::Diagnostics) and in
+// the measurement mode, which does not need them; off, a timer or a count
+// costs one test.
+inline bool Profiling() {
+  static const bool value = gpu::Diagnostics() || QuietRecords();
+  return value;
+}
 inline void Count(Counter counter, uint64_t value) {
-  if (gpu::Diagnostics()) counters[counter].fetch_add(value, std::memory_order_relaxed);
+  if (Profiling()) counters[counter].fetch_add(value, std::memory_order_relaxed);
 }
 // A counter that keeps the frame's largest value instead of the sum.
 inline void Max(Counter counter, uint64_t value) {
-  if (!gpu::Diagnostics()) return;
+  if (!Profiling()) return;
   uint64_t seen = counters[counter].load(std::memory_order_relaxed);
   while (seen < value && !counters[counter].compare_exchange_weak(seen, value, std::memory_order_relaxed)) {}
 }
 
 class Timer {
  public:
-  explicit Timer(Slot slot) : slot_(gpu::Diagnostics() ? slot : kCount), start_(slot_ == kCount ? 0 : Now()) {}
+  explicit Timer(Slot slot) : slot_(Profiling() ? slot : kCount), start_(slot_ == kCount ? 0 : Now()) {}
   ~Timer() { Stop(); }
   void Stop() {
     if (slot_ == kCount) return;
