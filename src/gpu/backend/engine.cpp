@@ -1,4 +1,7 @@
 #include "gpu/backend/engine.h"
+#include "gpu/backend/pipeline_set.h"
+#include "gpu/common/hash.h"
+#include "gpu/common/title_loading.h"
 #include "gpu/d3d/init/initializer_services.h"
 
 #include <windows.h>
@@ -42,15 +45,6 @@ int debugLayerOption() {
     const char* text = std::getenv("REX_NATIVE_D3D12_DEBUG");
     if (!text || !*text || std::string_view(text) == "0") return 0;
     return std::string_view(text) == "1" ? 1 : -1;
-  }();
-  return value;
-}
-// REX_NATIVE_PSO_WARM_SYNC=0 keeps every absent pipeline of a batched draw
-// asynchronous, a warm triple included (State::TakeAsync).
-bool warmSyncOption() {
-  static const bool value = [] {
-    const char* text = std::getenv("REX_NATIVE_PSO_WARM_SYNC");
-    return !(text && std::string_view(text) == "0");
   }();
   return value;
 }
@@ -255,8 +249,9 @@ struct Engine::State {
   // The stable identity of every created pipeline (PipelineList): the
   // shader names of the cache, the layout id and its elements, and the state
   // words of the key, in the order the key hashes them.
-  // Origin is how the draw got it: "created" by itself, "precompiled"
-  // (ready in the precompiled set) or "waited" (for a pool thread creating it).
+  // Origin is how the draw got it: "created" by itself, "warm" (by itself, a
+  // triple compiled before), "precompiled" (the list), "async" (the asynchronous
+  // threads) or "waited" (for either creating it); see pipeline_set.h.
   struct PipelineRecord {
     uint64_t key = 0, layout_id = 0;
     std::string vs, ps;
@@ -264,84 +259,13 @@ struct Engine::State {
     std::array<uint32_t, 21> state{};
     const char* origin = "created";
     uint32_t create_us = 0;  // The creation by the draw ("created" or "warm"), 0 otherwise.
+    uint32_t world = 0;      // The world loaded last when the draw took it (common/title_loading.h).
   };
   std::vector<PipelineRecord> pipeline_records;
-  // The precompiled set, shared with the pool threads
-  // (precompile_mutex). A key is being created by a pool thread, ready for the
-  // draw to take, failed, or the owner's (taken, or created by a draw). An
-  // entry is never erased, so a reference survives a rehash while waiting.
-  enum class Precompile { Compiling, Ready, Failed, Owner };
-  struct Precompiled {
-    Precompile phase = Precompile::Compiling;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
-    bool async = false;  // Created by the asynchronous threads for a draw.
-  };
-  std::mutex precompile_mutex;
-  std::condition_variable precompile_done;
-  std::unordered_map<uint64_t, Precompiled> precompiled;
-  // Asynchronous pipelines, as the SDK's asynchronous pipeline creation: a
-  // batched draw whose pipeline is not ready posts it here (precompile_mutex)
-  // and is recorded without itself; lowest-priority threads, started at the
-  // first post and joined in Shutdown before anything is released.
-  std::deque<std::pair<uint64_t, PipelineDesc>> async_queue;
-  std::vector<std::thread> async_threads;
-  std::condition_variable async_wake;
-  bool async_stop = false;
-  // Warm triples (VS, PS, layout): a pipeline of the triple was created in
-  // this process (the pool, the asynchronous threads or a draw), under
-  // precompile_mutex. A driver that keeps the compiled shaders of a triple
-  // creates a pipeline of it with another state in about 2.4 ms instead of 40
-  // to 100 ms (measured on AMD), so a batched draw whose pipeline is absent and
-  // whose triple is warm creates it in place instead of being skipped: the
-  // first one of a frame, and more while the frame's creations fit
-  // kWarmBudgetUs (owner, reset by CloseFrame). A creation slower than
-  // kWarmSlowUs turns this off for the session (a driver that does not keep
-  // the shaders), back to the asynchronous take.
-  static constexpr uint64_t kWarmBudgetUs = 3000, kWarmSlowUs = 8000;
-  std::unordered_set<uint64_t> warm_triples;
-  uint64_t warm_spent_us = 0, warm_estimate_us = 2500;
-  bool warm_sync = warmSyncOption();
-  // The take of a batched draw, which never waits. Ready: moved into out
-  // (origin "async" or "precompiled"). Compiling: skip. Absent: with a warm
-  // triple inside the frame's budget, the owner's for the draw to create
-  // (create); otherwise inserted as compiling for the caller to post, skip.
-  // Failed: null, the draw creates it.
-  const char* TakeAsync(uint64_t key, uint64_t triple, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out, bool& skip,
-                        bool& post, bool& create) {
-    std::lock_guard lock(precompile_mutex);
-    auto [it, inserted] = precompiled.try_emplace(key);
-    Precompiled& entry = it->second;
-    if (inserted && warm_sync && warm_triples.count(triple) &&
-        (!warm_spent_us || warm_spent_us + warm_estimate_us <= kWarmBudgetUs)) {
-      entry.phase = Precompile::Owner;
-      create = true;
-      return nullptr;
-    }
-    if (inserted) { entry.async = true; skip = post = true; return nullptr; }
-    if (entry.phase == Precompile::Compiling) { skip = true; return nullptr; }
-    const bool ready = entry.phase == Precompile::Ready;
-    if (ready) out = std::move(entry.pipeline);
-    entry.phase = Precompile::Owner;
-    return ready ? (entry.async ? "async" : "precompiled") : nullptr;
-  }
-  // Owner: moves the precompiled pipeline of key into out, waiting while a
-  // pool thread creates it, and marks the key the owner's. Returns the origin,
-  // or null when the draw must create it.
-  const char* TakePrecompiled(uint64_t key, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out) {
-    std::unique_lock lock(precompile_mutex);
-    auto [it, inserted] = precompiled.try_emplace(key);
-    Precompiled& entry = it->second;
-    if (inserted) { entry.phase = Precompile::Owner; return nullptr; }
-    const char* origin = "precompiled";
-    if (entry.phase == Precompile::Compiling) {
-      origin = "waited";
-      precompile_done.wait(lock, [&] { return entry.phase != Precompile::Compiling; });
-    }
-    const bool ready = entry.phase == Precompile::Ready;
-    if (ready) out = std::move(entry.pipeline);
-    entry.phase = Precompile::Owner;
-    return ready ? origin : nullptr;
-  }
+  // The pipelines between their creation and the owner's take: the embedded
+  // list's (the pool threads), the asynchronous threads' and the takes of the
+  // draws (pipeline_set.h). It creates through the draw layer (EnsureDrawLayer).
+  PipelineSet pipeline_set;
   // Draw root signature (XenosRecomp layout) and shader-visible heaps, once.
   bool EnsureDrawLayer(const char*& reason, HRESULT& hr);
   // The constant blocks of the draw layer, on the owner thread: the requests
@@ -847,14 +771,7 @@ bool Engine::Shutdown(std::string& evidence) {
                "\"guest_shutdown\":false}";
     return false;
   }
-  {  // The asynchronous pipeline threads end before anything is released.
-    std::lock_guard lock(state_->precompile_mutex);
-    state_->async_stop = true;
-    state_->async_queue.clear();
-  }
-  state_->async_wake.notify_all();
-  for (auto& thread : state_->async_threads) thread.join();
-  state_->async_threads.clear();
+  state_->pipeline_set.Stop();  // The asynchronous pipeline threads end before anything is released.
   // Signal may succeed while SetEvent/wait subsequently fails. Re-check the
   // actual fence before release; if unproved, keep ownership for diagnostic
   // process termination. No destruction or guest completion is then claimed.
@@ -898,10 +815,7 @@ bool Engine::Shutdown(std::string& evidence) {
   state_->batch_list.Reset();
   state_->pipelines.clear();
   state_->pipeline_records.clear();
-  {
-    std::lock_guard lock(state_->precompile_mutex);  // The pool was joined before.
-    state_->precompiled.clear();
-  }
+  state_->pipeline_set.Clear();  // The pool was joined before.
   state_->vs_block.fill(0);
   state_->ps_block.fill(0);
   state_->cbv_batch_fence = state_->last_vs_version = state_->last_ps_version = 0;
@@ -1263,7 +1177,7 @@ bool Engine::CloseFrame(void* event, uint64_t& target, std::string& evidence) {
   const char* batch_reason = nullptr;
   HRESULT hr = S_OK;
   if (!state_->CloseBatch(batch_reason, hr)) return fail(batch_reason, hr);
-  state_->warm_spent_us = 0;  // The budget of the warm pipelines is per frame (State::TakeAsync).
+  state_->pipeline_set.EndFrame();
   auto* fence = static_cast<plume::D3D12CommandFence*>(state_->fence.get());
   target = fence->fenceValue - 1;  // Every Signal takes fenceValue and then advances it.
   const uint64_t completed = fence->d3d->GetCompletedValue();
@@ -2483,20 +2397,6 @@ D3D12_BLEND_OP xenosBlendOp(uint32_t f, bool& ok) {
     default: ok = false; return D3D12_BLEND_OP_ADD;
   }
 }
-uint64_t fnvMix(uint64_t h, const void* data, size_t size) {
-  const auto* p = static_cast<const uint8_t*>(data);
-  for (size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 0x100000001B3ull;
-  return h;
-}
-// The triple of a pipeline (VS, PS, layout): the part of its key the driver
-// compiles shaders for (State::warm_triples).
-uint64_t TripleKey(const std::string& vs_key, const std::string& ps_key, uint64_t layout_id) {
-  uint64_t key = 0xCBF29CE484222325ull;
-  key = fnvMix(key, vs_key.data(), vs_key.size());
-  key = fnvMix(key, "|", 1);
-  key = fnvMix(key, ps_key.data(), ps_key.size());
-  return fnvMix(key, &layout_id, sizeof(layout_id));
-}
 constexpr UINT kDrawViews = 4096, kDrawSamplers = 2048;
 constexpr size_t kDrawStreamsMax = 8;  // Vertex buffer slots of one draw (the title binds up to 4).
 constexpr D3D12_RESOURCE_STATES kShaderResource =
@@ -2506,11 +2406,12 @@ constexpr D3D12_RESOURCE_STATES kShaderResource =
 uint64_t ElementsId(const std::vector<VertexElement>& elements) {
   uint64_t id = 0xCBF29CE484222325ull;
   for (const auto& e : elements) {
-    id = fnvMix(id, e.semantic, std::strlen(e.semantic));
+    id = Fnv64(reinterpret_cast<const uint8_t*>(e.semantic), std::strlen(e.semantic), id);
     const uint32_t fields[4] = {e.semantic_index, e.format, e.slot, e.offset};
-    id = fnvMix(id, fields, sizeof(fields));
+    id = Fnv64(reinterpret_cast<const uint8_t*>(fields), sizeof(fields), id);
     // Only per-instance elements add a field, so per-vertex layouts keep their ids.
-    if (e.instance_step) id = fnvMix(id, &e.instance_step, sizeof(e.instance_step));
+    if (e.instance_step)
+      id = Fnv64(reinterpret_cast<const uint8_t*>(&e.instance_step), sizeof(e.instance_step), id);
   }
   return id;
 }
@@ -2619,6 +2520,18 @@ HRESULT CreateDrawPipeline(ID3D12Device* device, ID3D12RootSignature* root, cons
   if (FAILED(hr)) reason = "native-draw-pipeline";
   return hr;
 }
+// The state words of a draw's pipeline key (CreateDrawPipeline) from the
+// request and its target: the samples of the target, and whether a depth and
+// a color target are bound. False: a topology the draw does not cover.
+bool DrawStateWords(const DrawRequest& r, uint32_t samples, bool depth, bool color, std::array<uint32_t, 21>& w) {
+  const uint32_t topology_type = r.topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ||
+      r.topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE : 0;
+  w = {r.blend_control, r.color_mask, r.depth_enable, r.depth_write, r.depth_func, r.cull_front, r.cull_back,
+       r.front_ccw, samples, depth, topology_type, r.alpha_to_coverage, r.stencil_enable, r.stencil_front,
+       r.stencil_back, r.stencil_read_mask, r.stencil_write_mask, r.depth_only, color, uint32_t(r.depth_bias),
+       std::bit_cast<uint32_t>(r.depth_bias_slope)};
+  return topology_type != 0;
+}
 }  // namespace
 
 // The draw root signature and heaps, created by the first draw or by
@@ -2673,6 +2586,13 @@ bool Engine::State::EnsureDrawLayer(const char*& reason, HRESULT& hr) {
   auto sampler = draw_samplers->GetCPUDescriptorHandleForHeapStart();
   for (unsigned i = 0; i < kDrawViews; ++i, view.ptr += view_step) device->d3d->CreateShaderResourceView(nullptr, &null_view, view);
   for (unsigned i = 0; i < kDrawSamplers; ++i, sampler.ptr += sampler_step) device->d3d->CreateSampler(&point, sampler);
+  // The pipeline set creates through the draw layer, on any thread: the device
+  // is free threaded and the root signature is read only from here on.
+  ID3D12Device* const d3d = device->d3d;
+  ID3D12RootSignature* const root = draw_root.Get();
+  pipeline_set.Configure([d3d, root](const PipelineDesc& d, PipelineSet::Pipeline& out, const char*& why) {
+    return CreateDrawPipeline(d3d, root, d.state, *d.elements, *d.vs_dxil, d.ps_dxil.get(), out, why);
+  });
   return true;
 }
 
@@ -2750,79 +2670,33 @@ bool Engine::DrawIndexed(const DrawRequest& r, uint64_t& fenceValue, std::string
   // scene can be listed (PipelineList) and precompiled.
   const uint32_t bc = r.blend_control;
   const uint64_t layout_id = r.layout_id ? r.layout_id : ElementsId(elements);
-  const uint32_t topology_type = r.topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ||
-      r.topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE : 0;
-  if (!topology_type) return fail("native-draw-topology-uncovered");
-  const std::array<uint32_t, 21> state_words{bc, r.color_mask, r.depth_enable, r.depth_write, r.depth_func,
-                                             r.cull_front, r.cull_back, r.front_ccw, target.desc.samples,
-                                             depth != nullptr, topology_type, r.alpha_to_coverage, r.stencil_enable,
-                                             r.stencil_front, r.stencil_back, r.stencil_read_mask,
-                                             r.stencil_write_mask, r.depth_only, color != nullptr,
-                                             uint32_t(r.depth_bias), std::bit_cast<uint32_t>(r.depth_bias_slope)};
+  std::array<uint32_t, 21> state_words{};
+  if (!DrawStateWords(r, target.desc.samples, depth != nullptr, color != nullptr, state_words))
+    return fail("native-draw-topology-uncovered");
   const uint64_t key = PipelineKey(r.vs_key, r.ps_key, layout_id, state_words);
   auto& pipeline = state_->pipelines[key];
   const bool pipeline_created = !pipeline;
-  bool skip_draw = false;  // The pipeline is being created asynchronously.
+  bool skip_draw = false;  // The pipeline is being created asynchronously (skip take).
   if (!pipeline) {
     profile::Timer pipeline_time(profile::kEnginePipeline);
-    // A pipeline of the precompiled set is taken, waiting while a
-    // pool thread creates it; otherwise the draw creates it. A
-    // batched draw never waits nor creates: a pipeline not ready is posted to
-    // the asynchronous threads (or is still being created by a pool thread)
-    // and the draw records its uploads, constants and bindings but not itself,
-    // unless its triple is warm (State::TakeAsync): then the draw creates it.
-    bool post = false, create_warm = false;
+    // The take (pipeline_set.h): a ready pipeline is taken; one a pool or an
+    // asynchronous thread is creating is waited for; one still queued is taken
+    // back; otherwise the draw creates it. A batched draw found its absent
+    // pipeline posted before the batch (PrefetchPipelines). The skip take
+    // (REX_NATIVE_PSO_ASYNC=1, diagnostics) posts a pipeline not ready and
+    // records the draw without itself.
     const uint64_t triple = TripleKey(r.vs_key, r.ps_key, layout_id);
-    const char* origin = r.async_pipeline ? state_->TakeAsync(key, triple, pipeline, skip_draw, post, create_warm)
-                                          : state_->TakePrecompiled(key, pipeline);
+    PipelineSet::Taken take = state_->pipeline_set.Take(key, triple, r.pipeline_take);
+    const char* origin = take.origin;
+    pipeline = std::move(take.pipeline);
+    skip_draw = take.skip;
     uint32_t create_us = 0;
-    if (skip_draw) {
-      if (post) {
-        {
-          std::lock_guard lock(state_->precompile_mutex);
-          state_->async_queue.push_back({key, PipelineDesc{r.vs_key, r.ps_key, r.vs_dxil,
-              r.depth_only ? std::shared_ptr<const std::vector<uint8_t>>() : r.ps_dxil, r.elements, layout_id, state_words}});
-        }
-        if (state_->async_threads.empty()) {
-          State* const s = state_.get();
-          ID3D12Device* const d3d = device->d3d;
-          ID3D12RootSignature* const root = state_->draw_root.Get();
-          const unsigned threads = std::max(2u, std::thread::hardware_concurrency() * 2 / 3);
-          for (unsigned i = 0; i < threads; ++i)
-            state_->async_threads.emplace_back([s, d3d, root] {
-              SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-              for (;;) {
-                std::pair<uint64_t, PipelineDesc> job;
-                {
-                  std::unique_lock lock(s->precompile_mutex);
-                  s->async_wake.wait(lock, [s] { return s->async_stop || !s->async_queue.empty(); });
-                  if (s->async_stop) return;
-                  job = std::move(s->async_queue.front());
-                  s->async_queue.pop_front();
-                }
-                const PipelineDesc& d = job.second;
-                Microsoft::WRL::ComPtr<ID3D12PipelineState> created;
-                const char* reason = nullptr;
-                const HRESULT result = CreateDrawPipeline(d3d, root, d.state, *d.elements, *d.vs_dxil, d.ps_dxil.get(),
-                                                          created, reason);
-                {
-                  std::lock_guard lock(s->precompile_mutex);
-                  auto& entry = s->precompiled[job.first];
-                  entry.phase = SUCCEEDED(result) ? State::Precompile::Ready : State::Precompile::Failed;
-                  entry.pipeline = std::move(created);
-                  if (SUCCEEDED(result)) s->warm_triples.insert(TripleKey(d.vs_key, d.ps_key, d.layout_id));
-                }
-                s->precompile_done.notify_all();
-              }
-            });
-        }
-        state_->async_wake.notify_one();
-        profile::Count(profile::kPipelinesAsync, 1);
-      }
-      profile::Count(profile::kPipelineSkippedDraws, 1);
-    } else if (origin) {
-      profile::Count(*origin == 'w' ? profile::kPipelinesWaited : profile::kPipelinesAdopted, 1);
-    } else {
+    if (take.post) {
+      state_->pipeline_set.Post(key, PipelineDesc{r.vs_key, r.ps_key, r.vs_dxil,
+          r.depth_only ? std::shared_ptr<const std::vector<uint8_t>>() : r.ps_dxil, r.elements, layout_id, state_words},
+          false, true);
+    }
+    if (!skip_draw && !origin) {
       const char* reason = nullptr;
       const auto started = std::chrono::steady_clock::now();
       hr = CreateDrawPipeline(device->d3d, state_->draw_root.Get(), state_words, elements, *r.vs_dxil,
@@ -2830,28 +2704,12 @@ bool Engine::DrawIndexed(const DrawRequest& r, uint64_t& fenceValue, std::string
       if (FAILED(hr)) { state_->pipelines.erase(key); return fail(reason, hr); }
       create_us = uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - started).count());
-      {
-        std::lock_guard lock(state_->precompile_mutex);
-        state_->warm_triples.insert(triple);
-      }
-      if (create_warm) {  // The frame's budget and the estimate; a slow driver turns the warm take off.
-        state_->warm_spent_us += create_us;
-        state_->warm_estimate_us = (3 * state_->warm_estimate_us + create_us) / 4;
-        if (create_us > State::kWarmSlowUs) {
-          state_->warm_sync = false;
-          profile::Count(profile::kPipelinesWarmSlow, 1);
-        }
-        profile::Count(profile::kPipelinesWarm, 1);
-        origin = "warm";
-      } else {
-        profile::Count(profile::kPipelinesCreated, 1);
-        origin = "created";
-      }
+      origin = state_->pipeline_set.NoteCreated(take, triple, create_us);
     }
     pipeline_time.Stop();
     if (skip_draw) state_->pipelines.erase(key);  // `pipeline` is not used below.
     else state_->pipeline_records.push_back({key, layout_id, r.vs_key, r.ps_key, r.elements, state_words, origin,
-                                             create_us});
+                                             create_us, WorldKey()});
   }
   // Textures: own copies with fixed SRV slots and cached samplers.
   // A copy is recreated only when no submitted work can still read it; a new
@@ -3007,7 +2865,7 @@ bool Engine::DrawIndexed(const DrawRequest& r, uint64_t& fenceValue, std::string
     sampler.MinLOD = t.min_lod;
     sampler.MaxLOD = t.max_lod;
     for (unsigned i = 0; i < 4; ++i) sampler.BorderColor[i] = t.border_color[i];
-    const uint64_t sampler_key = fnvMix(0xCBF29CE484222325ull, &sampler, sizeof(sampler));
+    const uint64_t sampler_key = Fnv64(reinterpret_cast<const uint8_t*>(&sampler), sizeof(sampler), 0xCBF29CE484222325ull);
     auto [slot_it, inserted] = state_->sampler_slots.try_emplace(sampler_key, uint32_t(state_->sampler_slots.size() + 1));
     if (inserted) {
       if (slot_it->second >= kDrawSamplers) { state_->sampler_slots.erase(slot_it); return fail("native-draw-samplers-exhausted"); }
@@ -3228,8 +3086,8 @@ std::string Engine::PipelineList() {
                                 e.format, e.slot, e.offset,
                                 e.instance_step ? fmt::format(",{}", e.instance_step) : std::string());
     out += fmt::format("{}{{\"key\":\"{:016x}\",\"vs\":\"{}\",\"ps\":\"{}\",\"layout\":\"{:016x}\",\"elements\":[{}],"
-                       "\"state\":[{}],\"origin\":\"{}\",\"create_us\":{}}}", out.empty() ? "" : ",", p.key, p.vs,
-                       p.ps, p.layout_id, elements, fmt::join(p.state, ","), p.origin, p.create_us);
+                       "\"state\":[{}],\"origin\":\"{}\",\"create_us\":{},\"world\":\"{:08x}\"}}", out.empty() ? "" : ",",
+                       p.key, p.vs, p.ps, p.layout_id, elements, fmt::join(p.state, ","), p.origin, p.create_us, p.world);
   }
   return "[" + out + "]";
 }
@@ -3237,11 +3095,11 @@ std::string Engine::PipelineList() {
 uint64_t Engine::PipelineKey(const std::string& vs_key, const std::string& ps_key, uint64_t layout_id,
                                            const std::array<uint32_t, 21>& state) {
   uint64_t key = 0xCBF29CE484222325ull;
-  key = fnvMix(key, vs_key.data(), vs_key.size());
-  key = fnvMix(key, "|", 1);
-  key = fnvMix(key, ps_key.data(), ps_key.size());
-  key = fnvMix(key, &layout_id, sizeof(layout_id));
-  return fnvMix(key, state.data(), sizeof(uint32_t) * state.size());
+  key = Fnv64(reinterpret_cast<const uint8_t*>(vs_key.data()), vs_key.size(), key);
+  key = Fnv64(reinterpret_cast<const uint8_t*>("|"), 1, key);
+  key = Fnv64(reinterpret_cast<const uint8_t*>(ps_key.data()), ps_key.size(), key);
+  key = Fnv64(reinterpret_cast<const uint8_t*>(&layout_id), sizeof(layout_id), key);
+  return Fnv64(reinterpret_cast<const uint8_t*>(state.data()), sizeof(uint32_t) * state.size(), key);
 }
 
 std::vector<PipelineDesc> Engine::PipelineDescs() {
@@ -3284,26 +3142,65 @@ bool Engine::PrecompilePipeline(const PipelineDesc& d, bool& present, std::strin
   std::array<uint32_t, 21> state = d.state;
   state[8] = state_->render_mode.Samples(state[8]);
   const uint64_t key = PipelineKey(d.vs_key, d.ps_key, d.layout_id, state);
-  {
-    std::lock_guard lock(state_->precompile_mutex);
-    if (!state_->precompiled.try_emplace(key).second) { present = true; return true; }  // Compiling.
-  }
-  Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
+  PipelineDesc listed = d;
+  listed.state = state;
   const char* reason = nullptr;
-  const HRESULT hr = CreateDrawPipeline(device->d3d, state_->draw_root.Get(), state, *d.elements, *d.vs_dxil,
-                                        d.ps_dxil.get(), pipeline, reason);
-  {
-    std::lock_guard lock(state_->precompile_mutex);
-    auto& entry = state_->precompiled[key];
-    entry.phase = SUCCEEDED(hr) ? State::Precompile::Ready : State::Precompile::Failed;
-    entry.pipeline = std::move(pipeline);
-    if (SUCCEEDED(hr)) state_->warm_triples.insert(TripleKey(d.vs_key, d.ps_key, d.layout_id));
-  }
-  state_->precompile_done.notify_all();
+  const HRESULT hr = state_->pipeline_set.Precompile(key, listed, present, reason);
+  if (present) return true;  // Compiling, ready or the owner's already.
   if (FAILED(hr)) return fail(reason, hr);
   profile::Count(profile::kPipelinesPrecompiled, 1);
   return true;
 }
+
+// Before a batch is drawn (owner): the key of each prefetch draw as
+// DrawIndexed computes it; one neither created nor in the pipeline set is
+// posted to the asynchronous threads, so the absent pipelines of the batch
+// are created in parallel while the draws before them record.
+void Engine::PrefetchPipelines(const std::vector<DrawRequest>& batch) {
+  if (!state_->ready || state_->owner_thread != GetCurrentThreadId() || state_->latched || !state_->draw_root) return;
+  for (const auto& r : batch) {
+    if (r.pipeline_take != DrawRequest::PipelineTake::kPrefetch || !r.vs_dxil || r.vs_dxil->empty() || !r.elements ||
+        r.elements->empty() || (r.depth_only ? bool(r.ps_dxil) : !r.ps_dxil || r.ps_dxil->empty())) continue;
+    const State::Surface* color = nullptr;
+    const State::Surface* depth = nullptr;
+    if (!r.depth_only || r.color_key) {
+      auto it = state_->surfaces.find(r.color_key);
+      if (it == state_->surfaces.end()) continue;
+      color = &it->second;
+    }
+    if (r.depth_enable || r.stencil_enable) {
+      auto it = state_->surfaces.find(r.depth_key);
+      if (it == state_->surfaces.end()) continue;
+      depth = &it->second;
+    }
+    if (!color && !depth) continue;
+    const uint64_t layout_id = r.layout_id ? r.layout_id : ElementsId(*r.elements);
+    std::array<uint32_t, 21> words{};
+    if (!DrawStateWords(r, (color ? color : depth)->desc.samples, depth != nullptr, color != nullptr, words)) continue;
+    const uint64_t key = PipelineKey(r.vs_key, r.ps_key, layout_id, words);
+    if (auto it = state_->pipelines.find(key); it != state_->pipelines.end() && it->second) continue;
+    if (state_->pipeline_set.Post(key, PipelineDesc{r.vs_key, r.ps_key, r.vs_dxil,
+            r.depth_only ? std::shared_ptr<const std::vector<uint8_t>>() : r.ps_dxil, r.elements, layout_id, words},
+            true, false))
+      profile::Count(profile::kPipelinesPrefetched, 1);
+  }
+}
+
+// As PrecompilePipeline reads the state: the root signature of PreparePipelines
+// and the render mode, fixed from then on; the key with the samples of the
+// render mode, as the draw computes it.
+bool Engine::PostPipeline(const PipelineDesc& d) {
+  if (!state_->device || !state_->draw_root) return false;
+  const bool depth_only = d.state[17];
+  if (!d.vs_dxil || d.vs_dxil->empty() || !d.elements || d.elements->empty() ||
+      (depth_only ? bool(d.ps_dxil) : !d.ps_dxil || d.ps_dxil->empty())) return false;
+  PipelineDesc listed = d;
+  listed.state[8] = state_->render_mode.Samples(listed.state[8]);
+  const uint64_t key = PipelineKey(listed.vs_key, listed.ps_key, listed.layout_id, listed.state);
+  return state_->pipeline_set.Post(key, std::move(listed), true, false);
+}
+
+std::string Engine::PipelineSummary() { return state_->pipeline_set.Summary(); }
 
 bool Engine::UploadSampled(const DrawTexture& t, std::string& evidence) {
   if (state_->Refused(evidence)) return false;

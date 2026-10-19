@@ -346,12 +346,18 @@ uint32_t RunOverDiscard(PPCContext& ctx, uint8_t* base, uint32_t dev, GuestFunct
 extern "C" void __imp__sub_821AE9C0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821AE5D0(PPCContext& __restrict, uint8_t*);
 namespace gpu {
-// REX_NATIVE_PSO_ASYNC=0 turns the asynchronous pipelines off (the draw
-// waits for or creates its pipeline); draws into small targets always wait.
-bool AsyncPipelines() {
-  static const bool value = [] {
+// The pipeline take of the batched draws (DrawRequest::PipelineTake): the
+// prefetch take by default (the draw never skips); REX_NATIVE_PSO_ASYNC=0
+// turns the asynchronous threads off (the draw waits for or creates its
+// pipeline, nothing posted before the batch); REX_NATIVE_PSO_ASYNC=1 brings
+// back the skip take, with the diagnostics only (the A/B of before).
+DrawRequest::PipelineTake BatchedPipelineTake() {
+  static const DrawRequest::PipelineTake value = [] {
     const char* text = std::getenv("REX_NATIVE_PSO_ASYNC");
-    return !(text && std::string_view(text) == "0");
+    const std::string_view option = text ? text : "";
+    if (option == "0") return DrawRequest::PipelineTake::kSync;
+    if (option == "1" && Diagnostics()) return DrawRequest::PipelineTake::kSkip;
+    return DrawRequest::PipelineTake::kPrefetch;
   }();
   return value;
 }
@@ -1594,17 +1600,12 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   if (!dispatcher) draw_failed("");
   if (dispatcher->PostedFailure(t.evidence)) draw_failed(t.evidence);
   request.want_evidence = evidence_draw;
-  // A batched draw never waits for a pipeline (the START policy keeps the
-  // synchronous take; its keys carry the policy name), except into a target
-  // smaller than kAsyncMinViewportPixels: a draw skipped while its pipeline
-  // compiles costs a screen-sized target one frame, but a small target may hold
-  // render-to-texture output the title draws only once (Broken Bond's title
-  // draws its 128x1 color ramp once, which stayed empty and left the scene
-  // ungraded).
-  constexpr float kAsyncMinViewportPixels = 640.0f * 360.0f;
-  const bool small_target = request.viewport[2] * request.viewport[3] < kAsyncMinViewportPixels;
-  request.async_pipeline = !evidence_draw && AsyncPipelines() && !small_target &&
-                           request.vs_key.find(':') == std::string::npos;
+  // A batched draw takes its pipeline as BatchedPipelineTake says (the START
+  // policy keeps the synchronous take; its keys carry the policy name). The
+  // prefetch take never skips, so a render-to-texture draw the title makes only
+  // once (Broken Bond's 128x1 title color ramp) is not lost while its pipeline
+  // compiles.
+  if (!evidence_draw && request.vs_key.find(':') == std::string::npos) request.pipeline_take = BatchedPipelineTake();
   if (evidence_draw) {
     uint64_t fence = 0;
     if (!dispatcher->Run([&request, &fence](Engine& engine, std::string& out) {
@@ -1700,7 +1701,7 @@ std::string QuadTraceFields(const PendingDraw& d, const InlineBuild& build, cons
       r.cull_front, r.cull_back, r.topology, r.index_count, r.base_vertex, viewport, r.scissor[0], r.scissor[1],
       r.scissor[2], r.scissor[3], textures, registers(r.vs_constants, 0, 4, false),
       registers(r.ps_constants, 0, 256, true), shared, r.vs_constants_version, r.ps_constants_version,
-      r.async_pipeline);
+      r.pipeline_take != DrawRequest::PipelineTake::kSync);
 }
 std::atomic<uint32_t> quad_snapshots{0};
 // The quad with the vertices the title wrote after BeginVertices,

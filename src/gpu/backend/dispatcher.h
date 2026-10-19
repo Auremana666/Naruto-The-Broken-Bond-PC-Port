@@ -63,15 +63,22 @@ class Dispatcher final {
   // WaitIdle on the owner, refused when a posted operation failed before it:
   // the guard of every point that publishes a fence to the title.
   bool Drain(std::string& evidence);
-  // Runs work(i, engine) for every i below count on `threads` pool
-  // threads of the lowest priority, concurrently with the owner; work may call
-  // only the engine's
-  // free-threaded operation (PrecompilePipeline). done(stopped) runs once, on
-  // the last thread to finish. Shutdown stops the pool (no new index) and
-  // joins it before the engine goes. One pool per dispatcher; false when it
-  // ran already or the dispatcher is not running.
+  // Runs work(i, engine) for every i below count on `threads` pool threads,
+  // concurrently with the owner; work may call only the engine's free-threaded
+  // operations (PrecompilePipeline). The threads follow the title's loading
+  // screen (common/title_loading.h): all of them at the highest priority while
+  // it is up, kPoolThreadsInGame at the lowest otherwise. done(stopped) runs
+  // once, on the last thread to finish. Shutdown stops the pool (no new index)
+  // and joins it before the engine goes. One pool per dispatcher; false when
+  // it ran already or the dispatcher is not running.
+  static constexpr unsigned kPoolThreadsInGame = 2;
   bool StartPool(size_t count, unsigned threads, std::function<void(size_t, Engine&)> work,
                  std::function<void(bool)> done);
+  // Runs operation(engine) on the calling thread, for the engine's
+  // free-threaded operations only (PostPipeline, PrecompilePipeline); the
+  // engine stays until it returns. False, without waiting, when the dispatcher
+  // is not running or is shutting down.
+  bool WithEngine(const std::function<void(Engine&)>& operation);
   // The translation stage. Deferred: the stage exists (fixed per session).
   bool Deferred() const;
   bool OnTranslator() const;  // The calling thread is the translator.

@@ -85,8 +85,12 @@ enum Counter : unsigned {
   // for room and the deepest the queue got (sampled at the Swap).
   kStageWaits, kStageDepth,
   // Absent pipelines of batched draws created in place because their triple
-  // was warm, and those slower than the warm limit (which turns it off).
-  kPipelinesWarm, kPipelinesWarmSlow, kCounterCount
+  // was warm, and those slower than the warm limit (which turns it off in the
+  // skip take; a driver that does not keep the shaders otherwise).
+  kPipelinesWarm, kPipelinesWarmSlow,
+  // Pipelines the owner posted before drawing their batch, and the longest
+  // wait of a draw for a pipeline being created in the frame (Max, microseconds).
+  kPipelinesPrefetched, kPipelineWaitUsMax, kCounterCount
 };
 inline constexpr const char* kCounterNames[kCounterCount] = {
     "hashed_bytes", "upload_bytes", "texture_uploads", "pipelines_created", "shader_variants", "submissions",
@@ -94,7 +98,8 @@ inline constexpr const char* kCounterNames[kCounterCount] = {
     "textures_registered", "textures_forgotten", "textures_recreated", "swap_number", "texture_bases",
     "headers_live", "buffers_hosted", "pipelines_adopted", "pipelines_waited", "pipelines_precompiled",
     "watch_notifications", "watch_pages", "clip_plane_draws", "pipelines_async", "pipeline_skipped_draws",
-    "stage_waits", "stage_depth", "pipelines_warm", "pipelines_warm_slow"};
+    "stage_waits", "stage_depth", "pipelines_warm", "pipelines_warm_slow", "pipelines_prefetched",
+    "pipeline_wait_us_max"};
 
 struct Accumulator {
   std::atomic<uint64_t> ns{0}, calls{0};
@@ -126,6 +131,12 @@ inline void Add(Slot slot, uint64_t ns) {
 // off, a timer or a count costs one test.
 inline void Count(Counter counter, uint64_t value) {
   if (gpu::Diagnostics()) counters[counter].fetch_add(value, std::memory_order_relaxed);
+}
+// A counter that keeps the frame's largest value instead of the sum.
+inline void Max(Counter counter, uint64_t value) {
+  if (!gpu::Diagnostics()) return;
+  uint64_t seen = counters[counter].load(std::memory_order_relaxed);
+  while (seen < value && !counters[counter].compare_exchange_weak(seen, value, std::memory_order_relaxed)) {}
 }
 
 class Timer {

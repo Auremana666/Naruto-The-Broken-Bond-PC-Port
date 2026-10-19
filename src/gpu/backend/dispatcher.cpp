@@ -1,5 +1,6 @@
 #include "gpu/backend/dispatcher.h"
 #include <windows.h>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
@@ -10,6 +11,7 @@
 #include <atomic>
 #include <algorithm>
 #include <fmt/format.h>
+#include "gpu/common/title_loading.h"
 #include "gpu/diagnostics/profile.h"
 #include "gpu/diagnostics/sampler.h"
 
@@ -180,6 +182,7 @@ struct Dispatcher::State {
     }
     profile::Count(profile::kDrawBatches, 1);
     const bool ok = PostLocked(lock, [batch](Engine& engine, std::string& out) {
+      engine.PrefetchPipelines(*batch);  // The absent pipelines of the batch, in parallel.
       for (const auto& request : *batch) {
         uint64_t fence = 0;
         if (!engine.DrawIndexed(request, fence, out)) return false;
@@ -463,13 +466,47 @@ bool Dispatcher::StartPool(size_t count, unsigned threads,
   auto shared_done = std::make_shared<std::function<void(bool)>>(std::move(done));
   state_->pool_active = threads;
   for (unsigned t = 0; t < threads; ++t)
-    state_->pool.emplace_back([this, engine, count, shared_work, shared_done] {
-      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    state_->pool.emplace_back([this, engine, count, t, shared_work, shared_done] {
       SetThreadDescription(GetCurrentThread(), L"Native Pipeline Compiler");
-      for (size_t i = 0; !state_->pool_stop.load() && (i = state_->pool_next.fetch_add(1)) < count;)
+      // The pool yields to the game: while the title shows its loading screen
+      // every thread compiles at the highest priority (the player waits anyway);
+      // with the game running, only the first kPoolThreadsInGame threads go on,
+      // at the lowest priority, and the others wait for the next loading screen
+      // (a cold driver cache takes some twenty seconds for the list on ten
+      // threads, and the frames of the first seconds of a world paid for it).
+      int priority = 0;
+      const bool in_game_thread = t < kPoolThreadsInGame;
+      for (;;) {
+        // The wait comes before the claim: an entry claimed by a sleeping
+        // thread would be nobody's (a draw would create it, the pool's done
+        // callback would wait for the next loading screen) and the stop
+        // would compile it before the join.
+        while (!TitleLoading() && !in_game_thread && !state_->pool_stop.load())
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (state_->pool_stop.load()) break;
+        const size_t i = state_->pool_next.fetch_add(1);
+        if (i >= count) break;
+        const int wanted = TitleLoading() ? THREAD_PRIORITY_HIGHEST : THREAD_PRIORITY_LOWEST;
+        if (wanted != priority) SetThreadPriority(GetCurrentThread(), priority = wanted);
         (*shared_work)(i, *engine);
+      }
       if (state_->pool_active.fetch_sub(1) == 1 && *shared_done) (*shared_done)(state_->pool_stop.load());
     });
+  return true;
+}
+
+bool Dispatcher::WithEngine(const std::function<void(Engine&)>& operation) {
+  // The engine stays until the operation returns. A Shutdown in progress holds
+  // the lifecycle for its whole duration: the operation is optional, so the
+  // caller (the title thread) is not made to wait for it.
+  std::unique_lock lifecycle(state_->lifecycle, std::try_to_lock);
+  if (!lifecycle.owns_lock()) return false;
+  {
+    std::lock_guard lock(state_->mutex);
+    if (!state_->dedicated || !state_->initialized || state_->closing || state_->stopped || !state_->engine)
+      return false;
+  }
+  operation(*state_->engine);
   return true;
 }
 

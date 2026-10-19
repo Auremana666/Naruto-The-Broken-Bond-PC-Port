@@ -126,12 +126,17 @@ struct DrawRequest {
   // A posted draw of the batch needs no evidence string; the engine
   // formats it only on failure. Evidence draws (Run) and the tests keep it.
   bool want_evidence = true;
-  // A pipeline that is not ready is created asynchronously and this draw
-  // records everything but itself (batched production draws only; the
-  // evidence draws, the quad and the START policy keep the synchronous take),
-  // unless the triple (VS, PS, layout) is warm and the frame's budget allows:
-  // then the draw creates it in place (Engine::State::TakeAsync).
-  bool async_pipeline = false;
+  // The take of the pipeline (batched production draws only; the evidence
+  // draws, the quad and the START policy keep the synchronous take). kPrefetch:
+  // the owner posts the absent pipelines of the batch to the asynchronous
+  // threads before drawing it (Engine::PrefetchPipelines), and the draw takes a
+  // ready one, waits for one being created or creates it, never skipped.
+  // kSkip (REX_NATIVE_PSO_ASYNC=1, diagnostics): the take before 2026-10-17, a
+  // pipeline not ready is posted and this draw records everything but itself,
+  // unless its triple (VS, PS, layout) is warm inside the frame's budget
+  // (PipelineSet::TakeSkip).
+  enum class PipelineTake : uint8_t { kSync, kPrefetch, kSkip };
+  PipelineTake pipeline_take = PipelineTake::kSync;
   uint32_t color_key = 0, depth_key = 0;
   // No pixel shader (the title's RB_MODECONTROL depth only): ps_dxil null,
   // no color written; color_key may be 0 (depth target only).
@@ -284,6 +289,18 @@ class Engine final {
   // waits for one being created; after a failure (evidence) it creates its own.
   bool PreparePipelines(std::string& evidence);
   bool PrecompilePipeline(const PipelineDesc& desc, bool& present, std::string& evidence);
+  // The pipelines of a draw batch that are neither created nor in the
+  // pipeline set, posted to the asynchronous threads before the batch is
+  // drawn (requests of PipelineTake::kPrefetch). Owner.
+  void PrefetchPipelines(const std::vector<DrawRequest>& batch);
+  // Posts one description of the list to the asynchronous threads unless the
+  // pipeline set has its key already (the pool compiled it, or a draw took it):
+  // the pipelines of the world the title starts loading
+  // (shaders/pipelines.cpp). Any thread once PreparePipelines ran, as
+  // PrecompilePipeline; false when not posted.
+  bool PostPipeline(const PipelineDesc& desc);
+  // How the pipelines were taken since Initialize, as JSON fields (any thread).
+  std::string PipelineSummary();
   // Uploads the levels of a sampled copy (key, layout, version, data)
   // into the open batch, before the draws recorded after it; recreated when
   // its description changes, as in DrawIndexed. A version not above the

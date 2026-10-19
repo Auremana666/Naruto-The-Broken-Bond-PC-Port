@@ -6,7 +6,14 @@
 // the DXIL of the cache and the spec constant variants the draw takes. A draw takes
 // a ready pipeline, or waits for one being created; one missing from the list is
 // created by the draw. REX_NATIVE_PSO_PRECOMPILE=0 turns the pool off.
+//
+// The list also knows the world each pipeline was first created in
+// (common/title_loading.h): when the title starts loading a world, its entries
+// not compiled yet are posted to the asynchronous threads ahead of the pool,
+// which compile them at the highest priority while the loading screen is up
+// (PrefetchWorldPipelines). REX_NATIVE_PSO_WORLD=0 turns that off.
 #include "gpu/shaders/pipelines.h"
+#include "gpu/common/title_loading.h"
 #include "gpu/d3d/draw.h"
 #include "gpu/shaders/shaders.h"
 #include "gpu/d3d/frame.h"
@@ -39,6 +46,7 @@
 #include <fmt/ranges.h>
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xthread.h>
@@ -59,13 +67,23 @@ struct PipelineCacheEntry {
   uint32_t first_element, element_count;
   std::array<uint32_t, 21> state;
 };
+// The entries first created while a world was the one loaded last, as a
+// range of kPipelineCacheWorldEntries (entry indices); a sentinel of key 0
+// ends the table.
+struct PipelineCacheWorld {
+  uint32_t key, first, count;
+};
 #if __has_include("gpu/shaders/pipeline_cache.inc")
 #include "gpu/shaders/pipeline_cache.inc"
 constexpr std::span<const PipelineCacheEntry> kPipelineCache{kPipelineCacheEntries};
 constexpr std::span<const PipelineCacheElement> kPipelineElements{kPipelineCacheElements};
+constexpr std::span<const PipelineCacheWorld> kPipelineWorlds{kPipelineCacheWorlds};
+constexpr std::span<const uint16_t> kPipelineWorldEntries{kPipelineCacheWorldEntries};
 #else
 constexpr std::span<const PipelineCacheEntry> kPipelineCache{};
 constexpr std::span<const PipelineCacheElement> kPipelineElements{};
+constexpr std::span<const PipelineCacheWorld> kPipelineWorlds{};
+constexpr std::span<const uint16_t> kPipelineWorldEntries{};
 constexpr const char* kPipelineCacheIdentity = "";
 #endif
 
@@ -74,7 +92,10 @@ struct PipelinePrecompile {
   std::chrono::steady_clock::time_point started;
   unsigned threads = 0;
   std::vector<VertexElements> layouts;  // Per entry, shared by layout id.
+  std::atomic<bool> pool_started{false};  // The layouts are built and the pool runs or ran.
   std::atomic<uint64_t> created{0}, present{0}, failed{0}, unresolved{0}, mismatched{0};
+  // The world prefetches (PrefetchWorldPipelines) since the start.
+  std::atomic<uint64_t> world_posted{0}, world_present{0};
   // Entries taken as the alpha to coverage variant (transparency antialiasing
   // on), and alpha to coverage entries taken back as the alpha test (off).
   std::atomic<uint64_t> alpha_to_coverage{0}, alpha_test{0};
@@ -88,23 +109,29 @@ void PrecompileNote(std::atomic<uint64_t>& counter, std::string failure) {
   if (pipeline_precompile.first_failure.empty()) pipeline_precompile.first_failure = std::move(failure);
 }
 
-// One entry of the list on a pool thread: its shaders by name, the key checked
-// against the engine's, then the engine's PrecompilePipeline.
-void PrecompileEntry(size_t i, Engine& engine) {
+// The description of one entry of the list, on any thread: its shaders by
+// name, the key checked against the engine's. False for an entry the cache
+// cannot resolve or whose key does not match; note: the pool's counters and
+// first failure take it (the pool only: the world prefetch counts its own).
+// linked: the spec constants of the pixel shader taken; variant: the draw asks
+// for another variant than the list holds (its key replaced the entry's).
+bool DescribeEntry(size_t i, PipelineDesc& desc, uint32_t& linked, bool& variant, bool note) {
   const PipelineCacheEntry& entry = kPipelineCache[i];
   auto unresolved = [&](const char* why) {
-    PrecompileNote(pipeline_precompile.unresolved, fmt::format("{{\"reason\":\"{}\",\"vs\":\"{}\",\"ps\":\"{}\"}}",
-                                                               why, entry.vs, entry.ps));
+    if (note)
+      PrecompileNote(pipeline_precompile.unresolved, fmt::format("{{\"reason\":\"{}\",\"vs\":\"{}\",\"ps\":\"{}\"}}",
+                                                                 why, entry.vs, entry.ps));
+    return false;
   };
   auto vs = shader_cache.by_name.find(entry.vs);
   if (vs == shader_cache.by_name.end()) return unresolved("vs-not-in-cache");
-  PipelineDesc desc;
   desc.vs_key = entry.vs;
   desc.ps_key = entry.ps;
   desc.vs_dxil = LoadDxil(*vs->second);
   if (!desc.vs_dxil) return unresolved("vs-dxil-unreadable");
   std::string variant_key;  // The pixel shader key the draw asks for now, when the list holds the other.
-  uint32_t linked = 0;
+  linked = 0;
+  variant = false;
   if (desc.ps_key != "depth-only") {
     std::string name = desc.ps_key;
     uint32_t spec = 0;
@@ -130,22 +157,45 @@ void PrecompileEntry(size_t i, Engine& engine) {
   desc.elements = pipeline_precompile.layouts[i];
   desc.layout_id = entry.layout;
   desc.state = entry.state;
-  if (Engine::PipelineKey(desc.vs_key, desc.ps_key, desc.layout_id, desc.state) != entry.key)
-    return PrecompileNote(pipeline_precompile.mismatched, fmt::format("{{\"reason\":\"key\",\"key\":\"{:016x}\"}}",
-                                                                      entry.key));
+  if (Engine::PipelineKey(desc.vs_key, desc.ps_key, desc.layout_id, desc.state) != entry.key) {
+    if (note)
+      PrecompileNote(pipeline_precompile.mismatched, fmt::format("{{\"reason\":\"key\",\"key\":\"{:016x}\"}}",
+                                                                 entry.key));
+    return false;
+  }
   // As the draw: the variant's key; alpha to coverage turns state word 11 on,
   // and the alpha test keeps the word of the entry (the title's alpha to mask).
   if (!variant_key.empty()) {
+    variant = true;
     desc.ps_key = variant_key;
     if (linked == kSpecAlphaToCoverage) desc.state[11] = 1;
   }
+  return true;
+}
+
+// One entry of the list on a pool thread: its description, then the engine's
+// PrecompilePipeline.
+void PrecompileEntry(size_t i, Engine& engine) {
+  PipelineDesc desc;
+  uint32_t linked = 0;
+  bool variant = false;
+  if (!DescribeEntry(i, desc, linked, variant, true)) return;
   bool present = false;
   std::string evidence;
   if (!engine.PrecompilePipeline(desc, present, evidence))
     return PrecompileNote(pipeline_precompile.failed, evidence);
   ++(present ? pipeline_precompile.present : pipeline_precompile.created);
-  if (!variant_key.empty()) ++(linked == kSpecAlphaToCoverage ? pipeline_precompile.alpha_to_coverage
-                                                               : pipeline_precompile.alpha_test);
+  if (variant) ++(linked == kSpecAlphaToCoverage ? pipeline_precompile.alpha_to_coverage
+                                                 : pipeline_precompile.alpha_test);
+}
+
+// REX_NATIVE_PSO_WORLD=0 leaves the pipelines of a world to the pool and the draws.
+bool worldPrefetchOption() {
+  static const bool value = [] {
+    const char* text = std::getenv("REX_NATIVE_PSO_WORLD");
+    return !(text && std::string_view(text) == "0");
+  }();
+  return value;
 }
 
 void StartPipelinePrecompile() {
@@ -180,6 +230,7 @@ void StartPipelinePrecompile() {
   // Two thirds of the hardware threads, at least two.
   p.threads = std::max(2u, std::thread::hardware_concurrency() * 2 / 3);
   p.started = std::chrono::steady_clock::now();
+  p.pool_started.store(true, std::memory_order_release);
   const bool started = dispatcher->StartPool(kPipelineCache.size(), p.threads, PrecompileEntry, [](bool stopped) {
     auto& p = pipeline_precompile;
     std::string failure;
@@ -189,19 +240,54 @@ void StartPipelinePrecompile() {
     }
     host::Record("native-d3d-pipeline-precompile", fmt::format(
         "\"list\":{},\"threads\":{},\"created\":{},\"present\":{},\"failed\":{},\"unresolved\":{},\"mismatched\":{},"
-        "\"alpha_to_coverage\":{},\"alpha_test\":{},\"stopped\":{},\"ms\":{},\"swap\":{},\"first_failure\":{}",
+        "\"alpha_to_coverage\":{},\"alpha_test\":{},\"world_posted\":{},\"world_present\":{},\"stopped\":{},\"ms\":{},"
+        "\"swap\":{},\"first_failure\":{}",
         kPipelineCache.size(),
         p.threads, p.created.load(), p.present.load(), p.failed.load(), p.unresolved.load(), p.mismatched.load(),
-        p.alpha_to_coverage.load(), p.alpha_test.load(), stopped,
+        p.alpha_to_coverage.load(), p.alpha_test.load(), p.world_posted.load(), p.world_present.load(), stopped,
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p.started).count(),
         swaps.load(), failure));
   });
   host::Record("native-d3d-pipeline-precompile-start", fmt::format(
-      "\"started\":{},\"list\":{},\"layouts\":{},\"threads\":{},\"identity\":\"{}\",\"swap\":{}", started,
-      kPipelineCache.size(), shared.size(), p.threads, kPipelineCacheIdentity, swaps.load()));
+      "\"started\":{},\"list\":{},\"layouts\":{},\"worlds\":{},\"threads\":{},\"identity\":\"{}\",\"swap\":{}",
+      started, kPipelineCache.size(), shared.size(), kPipelineWorlds.empty() ? 0 : kPipelineWorlds.size() - 1,
+      p.threads, kPipelineCacheIdentity, swaps.load()));
 }
 
 void StartPipelinePrecompileOnce() { std::call_once(pipeline_precompile.once, StartPipelinePrecompile); }
+
+// The entries of a world (the table ends with a sentinel of key 0), described
+// on the calling thread and posted to the asynchronous threads of the pipeline
+// set, which skip the ones the set has (compiled by the pool, or taken by a
+// draw already). Nothing before the pool started: its layouts are the
+// entries', and the first world of a boot loads before the first draw.
+WorldPrefetch PrefetchWorldPipelines(uint32_t world_key) {
+  WorldPrefetch out;
+  auto& p = pipeline_precompile;
+  if (!worldPrefetchOption() || !p.pool_started.load(std::memory_order_acquire)) return out;
+  const PipelineCacheWorld* world = nullptr;
+  if (world_key)  // The sentinel of key 0 is not a world.
+    for (const auto& w : kPipelineWorlds)
+      if (w.key == world_key) { world = &w; break; }
+  if (!world) return out;
+  out.listed = world->count;
+  std::vector<PipelineDesc> descs;
+  descs.reserve(world->count);
+  for (uint32_t e = world->first; e < world->first + world->count; ++e) {
+    PipelineDesc desc;
+    uint32_t linked = 0;
+    bool variant = false;
+    if (DescribeEntry(kPipelineWorldEntries[e], desc, linked, variant, false)) descs.push_back(std::move(desc));
+    else ++out.unresolved;
+  }
+  auto* dispatcher = host::ActiveDispatcher();
+  if (!dispatcher || !dispatcher->WithEngine([&](Engine& engine) {
+        for (const auto& desc : descs) ++(engine.PostPipeline(desc) ? out.posted : out.present);
+      })) return out;
+  p.world_posted.fetch_add(out.posted, std::memory_order_relaxed);
+  p.world_present.fetch_add(out.present, std::memory_order_relaxed);
+  return out;
+}
 }  // namespace gpu
 
 namespace gpu {
@@ -210,9 +296,16 @@ namespace gpu {
 // on the stop and on the close.
 void RecordPipelines() {
   auto* dispatcher = host::ActiveDispatcher();
-  std::string pipelines;
-  if (!dispatcher || !dispatcher->Run([](Engine& engine, std::string& o) { o = engine.PipelineList(); return true; },
-                                      pipelines) || pipelines.empty()) return;
+  std::string pipelines, takes;
+  if (!dispatcher || !dispatcher->Run([&takes](Engine& engine, std::string& o) {
+        o = engine.PipelineList();
+        takes = engine.PipelineSummary();
+        return true;
+      }, pipelines) || pipelines.empty()) return;
+  // How the draws took their pipelines (pipeline_set.h): the record and, in
+  // the product (no journal), the SDK log.
+  host::Record("native-d3d-pipeline-takes", takes);
+  if (!host::Journaled()) REXLOG_INFO("[broken_bond] Native renderer pipelines: {{{}}}", takes);
   size_t count = 0;
   for (size_t at = pipelines.find("{\"key\""); at != std::string::npos; at = pipelines.find("{\"key\"", at + 1)) ++count;
   std::string file = "null";
