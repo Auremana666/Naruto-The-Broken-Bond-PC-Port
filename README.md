@@ -67,7 +67,7 @@ Keyboard defaults include Enter for Start, Space for A, Backspace for B, and WAS
 
 ## License
 
-Original project code and documentation are licensed under the [MIT License](LICENSE).
+Copyright (C) 2026 Jorge Barbosa. The source code of this port is licensed under version 3 of the [GNU General Public License](LICENSE) (GPL-3.0-only).
 ReXGlue and its dependencies retain their own licenses, including the
 [SDK license](sdk/LICENSE). The project license does not cover the original
 game executable, assets, or code translated from the game.
