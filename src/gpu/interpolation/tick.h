@@ -32,6 +32,18 @@
 // recorded as native-d3d-tick. In the native mode, each change of the step,
 // its flag or the title's interval is recorded as native-d3d-time-step, with
 // the mode on or off. Main thread.
+//
+// The time of the view block: the display and the effects' draw advance some
+// state by the engine's dt (+56 in microseconds, +64 scaled, +68 raw). The
+// engine's time is updated only in the ticks, so between them the view block
+// would see the tick's dt in every frame, twice per tick at 60 Hz. In the
+// iterations the gate decides, from the view start (827F6F38) to the end of
+// the delivery (82BBADE0), the three fields are scaled to the advance of the
+// image's time (ticks + alpha) since the last view block, in periods: half the
+// tick's dt per frame at 60 Hz, a quarter at 120 Hz; then the tick's values
+// come back. The effects' work thread gets its dt as an argument (82BE45F0).
+// REX_NATIVE_INTERPOLATION_VIEW_TIME=0 leaves the tick's dt; =tick gives the
+// tick's dt in the ticks and 0 between them (a probe).
 #include <cstdint>
 
 namespace gpu::tick {
@@ -62,4 +74,8 @@ const Frame& Current();
 bool InGatedStep();
 // The label of the window title; empty when the mode is off.
 const char* Label();
+// The view start (827F6F38) and the delivery's end (82BBADE0) of the main
+// step, main thread: the engine's dt of the view block (above).
+void BeginView(uint8_t* base);
+void EndView(uint8_t* base);
 }  // namespace gpu::tick

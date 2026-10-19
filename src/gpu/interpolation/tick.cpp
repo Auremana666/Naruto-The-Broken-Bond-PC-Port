@@ -1,5 +1,6 @@
 // The logic tick of the engine at a free frame rate (tick.h).
 #include "gpu/interpolation/tick.h"
+#include "gpu/interpolation/transforms.h"
 #include "gpu/common/guest_memory.h"
 #include "gpu/common/title_loading.h"
 #include "gpu/d3d/d3d.h"
@@ -50,6 +51,18 @@ double debt = 0;  // Real time owed to the game, seconds.
 uint64_t capped = 0;  // Iterations whose debt reached two periods (the game behind the real time).
 int64_t window_start = 0;
 uint64_t window_ticks = 0, window_iterations = 0;
+// The time of the view block (tick.h): 0 off, 1 the image's advance, 2 the
+// probe (the tick's dt in the ticks, 0 between them).
+int view_time = -1;
+struct EngineDt {
+  uint64_t us = 0;  // +56, int64.
+  float dt = 0.0f, raw = 0.0f;  // +64, +68.
+};
+EngineDt view_saved, view_set;
+uint32_t view_address = 0;  // The time structure written, 0 when nothing is.
+bool view_started = false;
+double view_shown = 0;  // The image's time of the last view block, in periods.
+double window_view_dt = 0, window_tick_dt = 0;  // The dt the view blocks saw and the ticks' dt, seconds.
 // The step as last recorded (native-d3d-time-step).
 struct Step {
   uint32_t fixed = 0;
@@ -60,17 +73,43 @@ struct Step {
 Step step_recorded{0xFFFFFFFFu, 0.0f, 0xFFFFFFFFu};
 uint64_t step_iterations = 0, step_changes = 0;
 
+uint64_t Get64(uint8_t* base, uint32_t a) { return (uint64_t(Get32(base, a)) << 32) | Get32(base, a + 4); }
+void Put64(uint8_t* base, uint32_t a, uint64_t v) {
+  Put32(base, a, uint32_t(v >> 32));
+  Put32(base, a + 4, uint32_t(v));
+}
+EngineDt ReadDt(uint8_t* base, uint32_t time) {
+  return {Get64(base, time + 56), GetFloat(base, time + 64), GetFloat(base, time + 68)};
+}
+void WriteDt(uint8_t* base, uint32_t time, const EngineDt& d) {
+  Put64(base, time + 56, d.us);
+  PutFloat(base, time + 64, d.dt);
+  PutFloat(base, time + 68, d.raw);
+}
+
+int ViewTime() {
+  if (view_time < 0) {
+    const char* text = std::getenv("REX_NATIVE_INTERPOLATION_VIEW_TIME");
+    const std::string_view value = text ? text : "";
+    view_time = !Enabled() || value == "0" ? 0 : value == "tick" ? 2 : 1;
+  }
+  return view_time;
+}
+
 void Record(const char* reason, int64_t now) {
   const double seconds = window_start && frequency ? double(now - window_start) / double(frequency) : 0.0;
   host::Record("native-d3d-tick", fmt::format(
       "\"reason\":\"{}\",\"iteration\":{},\"swap\":{},\"owning\":{},\"gate\":{},\"tick\":{},\"period\":{:.6f},"
       "\"alpha\":{:.4f},\"frame_rate\":{},\"pace_rate\":{},\"ticks\":{},\"skipped\":{},\"capped\":{},"
-      "\"debt_ms\":{:.3f},\"window_s\":{:.3f},\"window_ticks_per_s\":{:.3f},\"window_iterations_per_s\":{:.3f}",
+      "\"debt_ms\":{:.3f},\"window_s\":{:.3f},\"window_ticks_per_s\":{:.3f},\"window_iterations_per_s\":{:.3f},"
+      "\"view_time\":{},\"window_view_dt_per_s\":{:.4f},\"window_tick_dt_per_s\":{:.4f}",
       reason, frame.index, swaps.load(std::memory_order_relaxed), Owning(), frame.gate, frame.tick, frame.period,
       frame.alpha, FrameRate(), PaceRate(), frame.ticks, frame.skipped, capped, debt * 1e3, seconds,
-      seconds > 0 ? double(window_ticks) / seconds : 0.0, seconds > 0 ? double(window_iterations) / seconds : 0.0));
+      seconds > 0 ? double(window_ticks) / seconds : 0.0, seconds > 0 ? double(window_iterations) / seconds : 0.0,
+      ViewTime(), seconds > 0 ? window_view_dt / seconds : 0.0, seconds > 0 ? window_tick_dt / seconds : 0.0));
   window_start = now;
   window_ticks = window_iterations = 0;
+  window_view_dt = window_tick_dt = 0;
 }
 
 // Once per loop iteration of the native mode, mode on or off: the step and the
@@ -126,6 +165,7 @@ void Decide(uint8_t* base) {
     frame.tick = true;
     frame.alpha = 1.0f;
     started = false;
+    view_started = false;
     debt = 0;
     frames_since_tick = 0;
   } else {
@@ -224,11 +264,39 @@ const Frame& Current() { return frame; }
 
 bool InGatedStep() { return in_step; }
 
+void BeginView(uint8_t* base) {
+  view_address = 0;
+  if (!Gating() || !in_step || !frame.gate || !ViewTime()) return;
+  const uint32_t time = Get32(base, kTimePointer);
+  if (!time) return;
+  // The image's time, in periods: the last tick plus alpha. A new run of the
+  // gate starts with a frame's share of the period.
+  const double shown = double(frame.ticks) + frame.alpha;
+  const double advance = view_started ? shown - view_shown : 1.0 / (double(frame.period) * FrameRate());
+  view_started = true;
+  view_shown = shown;
+  const double factor = ViewTime() == 2 ? (frame.tick ? 1.0 : 0.0) : std::clamp(advance, 0.0, 2.0);
+  view_saved = ReadDt(base, time);
+  view_set = {uint64_t(int64_t(double(int64_t(view_saved.us)) * factor)), float(view_saved.dt * factor),
+              float(view_saved.raw * factor)};
+  WriteDt(base, time, view_set);
+  view_address = time;
+  window_view_dt += view_set.dt;
+  window_tick_dt += view_saved.dt;
+}
+
+void EndView(uint8_t* base) {
+  if (!view_address) return;
+  const EngineDt now = ReadDt(base, view_address);
+  if (now.us == view_set.us && now.dt == view_set.dt && now.raw == view_set.raw) WriteDt(base, view_address, view_saved);
+  view_address = 0;
+}
+
 const char* Label() {
   if (!Enabled()) return "";
   if (switched_off) return "F8: off";
   if (!frame.gate) return "F8: ticks (no gate)";
-  return "F8: ticks";
+  return interpolation::Enabled() ? "F8: interpolated" : "F8: ticks";
 }
 
 // The two calls of the main loop.
