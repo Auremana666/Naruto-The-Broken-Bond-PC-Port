@@ -21,6 +21,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <map>
 #include <unordered_map>
@@ -183,22 +184,36 @@ std::mutex vertex_layouts_mutex;
 std::unordered_map<VertexLayoutKey, std::shared_ptr<const VertexLayout>, VertexLayoutKeyHash> vertex_layouts;
 std::atomic<uint64_t> layouts_built{0}, layouts_reused{0}, layouts_uncached{0};
 std::atomic<uint32_t> fetch_index_records{0};
-// The title's instancing shaders (the 30 VS with g_vInstanceParams) fetch the
-// mesh with r0.x, the vertex index made local to its instance, and the
-// instance data with floor((index + 0.5) / g_vInstanceParams.y). The
-// translated shaders read every element from the input assembler, so those
-// streams become per-instance data of a D3D12 instanced draw (TranslateDraw).
-// Another fetch index keeps the per-vertex input of before, recorded.
+// The title's instancing shaders (the 30 VS with g_vInstanceParams) compute,
+// from the vertex index i, a mesh index x + i - instance * y with a
+// multiply-add and an instance index (i + 0.5) / y with a multiply (x, y:
+// g_vInstanceParams), and fetch the mesh with the first and the instance data
+// with the second (floor, no fetch rounds it). The translated shaders read
+// every element from the input assembler, so those streams become
+// per-instance data of a D3D12 instanced draw (TranslateDraw).
+//
+// The mesh index is the index of the POSITION0 fetch. An offline pass over
+// every vertex shader container of the title (prologue of the translated
+// HLSL, fetch words of the microcode; 2026-10-18) found the multiply-add
+// writing the POSITION0 index in all 29 shaders with two index registers:
+// r0.x in 27, r1.y in vs-002256BC and r1.x in vs-00225B92. vs-0026BCA5 fetches
+// POSITION0 and TEXCOORD0 through an index it reads from a per-vertex stream
+// (POSITION1.x), which instancing cannot express: with three index registers
+// it keeps the per-vertex input of before, recorded, as any other layout.
 void ClassifyInstanceStreams(uint8_t* base, const BoundShader& vs, const std::vector<uint32_t>& element_index,
                              VertexLayout& L) {
   constexpr uint32_t kVertexIndex = 0;  // r0.x as (register << 2 | component).
-  if (std::all_of(element_index.begin(), element_index.end(), [](uint32_t i) { return i == kVertexIndex; })) return;
+  uint32_t mesh_index = kVertexIndex;
+  for (size_t i = 0; i < L.elements.size(); ++i)
+    if (std::string_view(L.elements[i].semantic) == "POSITION" && L.elements[i].semantic_index == 0)
+      mesh_index = element_index[i];
+  if (std::all_of(element_index.begin(), element_index.end(), [&](uint32_t i) { return i == mesh_index; })) return;
   const int32_t params = FindFloatConstant(base, vs, "g_vInstanceParams");
   std::vector<int> slot_kind(L.stream_fetch.size(), -1);  // 0 per vertex, 1 per instance.
   uint32_t instance_index = UINT32_MAX;
   bool covered = params >= 0;
   for (size_t i = 0; covered && i < L.elements.size(); ++i) {
-    const int kind = element_index[i] != kVertexIndex;
+    const int kind = element_index[i] != mesh_index;
     if (kind && instance_index != UINT32_MAX && instance_index != element_index[i]) covered = false;
     if (kind) instance_index = element_index[i];
     int& slot = slot_kind[L.elements[i].slot];
@@ -219,7 +234,7 @@ void ClassifyInstanceStreams(uint8_t* base, const BoundShader& vs, const std::ve
   L.instance_params = params;
   for (const int kind : slot_kind) L.stream_per_instance.push_back(kind == 1);
   for (size_t i = 0; i < L.elements.size(); ++i) {
-    if (element_index[i] == kVertexIndex) continue;
+    if (element_index[i] == mesh_index) continue;
     L.elements[i].instance_step = 1;
     L.legacy_elements[i].instance_step = 1;
   }
