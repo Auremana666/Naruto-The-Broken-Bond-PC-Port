@@ -91,8 +91,8 @@ you want to be safe.
 
 ## Known issues
 
-- The game runs at 30 FPS. Its speed is tied to the frame rate, so higher frame rates are not
-  supported yet.
+- Menus, the free-roaming parts and Story Mode scenes run at 30 FPS, the game's own limit there.
+  Fights run at up to 60 FPS.
 - Some virtual controller drivers (DS4Windows / ViGEm, Rainway) make a controller show as
   "connected" even when it's unplugged.
 
