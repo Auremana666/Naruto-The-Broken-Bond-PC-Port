@@ -30,16 +30,24 @@ forever for voice lines, and its streamed audio (docs/known-issues.md):
   keeps the frame's part, releases the buffer and completes the frame from the
   next buffer's first packet (DecodePendingSplitFrame; the frame decode moves
   to DecodeFrame), so no buffer is held and no frame is dropped.
+- A frame whose 15-bit header is split into that buffer was dropped: the
+  buffer was released without it and decoding went on at the first frame of
+  the next buffer. Broken Bond submits one packet per buffer and refills a
+  stream only while it is owed less than 2400 samples, counted from a
+  per-packet sample table; a few frames lost this way left voices and music
+  owed more than that forever (scenes waited for voice lines, music stopped).
+  The frame is now kept and completed from the next buffer like a split body.
 - Each decoded block is queued as it comes, as Xenia Canary does. The SDK's
   start-padding realignment (f24299f, for loop wraps) held every frame back
-  until the next decode. Broken Bond refills a stream one buffer at a time and
-  waits for all the samples of a buffer first, so at every buffer boundary it
-  waited for a frame that needed the next buffer: the end of a voice never came,
-  and queuing that frame early with its last kDecoderStartPadding samples silent
-  put a gap into streamed voices and music at every boundary (crackles).
-  Without the realignment a loop wrap may lose those samples again.
+  until the next decode, so the last frame of a stream never came out and a
+  title that counts a voice's samples waited for it forever. Flushing it once
+  the input ran out and the output had played, with its last
+  kDecoderStartPadding samples silent, also fired at every buffer boundary of a
+  stream submitted one packet per buffer, whose output plays out before the
+  next packet arrives: a gap in streamed voices and music at every boundary
+  (crackles). Without the realignment a loop wrap may lose those samples again.
 diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
-index 8426798..773550c 100644
+index 8426798..8035fe6 100644
 --- a/include/rex/audio/xma/context.h
 +++ b/include/rex/audio/xma/context.h
 @@ -251,6 +251,15 @@ class XmaContext {
@@ -58,16 +66,17 @@ index 8426798..773550c 100644
    void Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* data);
    void UpdateLoopStatus(XMA_CONTEXT_DATA* data);
    void ClearLocked(XMA_CONTEXT_DATA* data);
-@@ -306,6 +315,16 @@ class XmaContext {
+@@ -306,6 +315,17 @@ class XmaContext {
    bool carry_valid_ = false;
    uint8_t pending_output_limit_ = 0;
    uint8_t pending_start_skip_ = 0;
 +
-+  // A frame whose body runs past the current input buffer while the other
-+  // buffer is not valid yet. The hardware does not hold a buffer for the next
-+  // one: the buffer is released and the frame completed from the first packet
-+  // of the next buffer. Kept here: the frame's packet data, its offset in bits
-+  // into that data and its size.
++  // A frame whose body, or its 15-bit header, runs past the current input
++  // buffer while the other buffer is not valid yet. The hardware does not hold
++  // a buffer for the next one: the buffer is released and the frame completed
++  // from the first packet of the next buffer. Kept here: the frame's packet
++  // data, its offset in bits into that data and its size (0 while the header is
++  // incomplete).
 +  std::array<uint8_t, kBytesPerPacketData> split_frame_packet_;
 +  uint32_t split_frame_offset_ = 0;
 +  uint32_t split_frame_size_ = 0;
@@ -76,7 +85,7 @@ index 8426798..773550c 100644
  
  }  // namespace rex::audio
 diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
-index 11b83be..8ca8d92 100644
+index 11b83be..02c5e06 100644
 --- a/src/audio/xma_context.cpp
 +++ b/src/audio/xma_context.cpp
 @@ -117,6 +117,10 @@ bool XmaContext::Work() {
@@ -193,7 +202,29 @@ index 11b83be..8ca8d92 100644
    const int16_t packet_index = GetPacketNumber(current_input_size, data->input_buffer_read_offset);
  
    if (packet_index == -1) {
-@@ -639,6 +696,23 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+@@ -604,6 +661,21 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   // Frame header split across packet boundary.
+   if (packet_info.current_frame_size_ == 0) {
+     const uint8_t* next_packet = GetNextPacket(data, next_packet_index, current_input_packet_count);
++    if (!next_packet && next_packet_index >= current_input_packet_count) {
++      // The header continues in the other input buffer, not valid yet. Releasing
++      // the buffer without the frame dropped it: decoding went on at the first
++      // frame that starts in the next buffer. Broken Bond submits one packet per
++      // buffer and counts the samples of every packet it submits; a stream that
++      // lost a few frames this way stayed owed more than its refill window and
++      // was never refilled again (music stopped, voice lines never ended). Keep
++      // the packet and complete the frame from the next buffer, as a split body.
++      std::memcpy(split_frame_packet_.data(), packet + kBytesPerPacketHeader, kBytesPerPacketData);
++      split_frame_offset_ = relative_offset - kBitsPerPacketHeader;
++      split_frame_size_ = 0;
++      split_frame_pending_ = true;
++      SwapInputBuffer(data);
++      return;
++    }
+     if (!next_packet) {
+       SwapInputBuffer(data);
+       return;
+@@ -639,6 +711,23 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
      if (stream.BitsRemaining() < packet_info.current_frame_size_) {
        const uint8_t* next_packet =
            GetNextPacket(data, next_packet_index, current_input_packet_count);
@@ -217,7 +248,7 @@ index 11b83be..8ca8d92 100644
        if (!next_packet) {
          data->error_status = 4;
          return;
-@@ -649,65 +723,8 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+@@ -649,65 +738,8 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
    }
  
    std::memcpy(input_buffer_.data(), packet + kBytesPerPacketHeader, kBytesPerPacketData);
@@ -285,7 +316,7 @@ index 11b83be..8ca8d92 100644
  
    // Compute where to go next.
    if (is_loop_end_frame) {
-@@ -740,6 +757,72 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+@@ -740,6 +772,80 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
    data->input_buffer_read_offset = next_input_offset;
  }
  
@@ -297,7 +328,15 @@ index 11b83be..8ca8d92 100644
 +  std::memcpy(input_buffer_.data(), split_frame_packet_.data(), kBytesPerPacketData);
 +  std::memcpy(input_buffer_.data() + kBytesPerPacketData, current_input_buffer + kBytesPerPacketHeader,
 +              kBytesPerPacketData);
-+  DecodeFrame(data, split_frame_offset_, split_frame_size_, false);
++  if (split_frame_size_ == 0) {
++    // The header was split too: read it across the two packets.
++    BitStream combined(input_buffer_.data(), (kBitsPerPacket - kBitsPerPacketHeader) * 2);
++    combined.SetOffset(split_frame_offset_);
++    split_frame_size_ = static_cast<uint32_t>(combined.Peek(kBitsPerFrameHeader));
++  }
++  if (split_frame_size_ != 0 && split_frame_size_ != xma::kMaxFrameLength) {
++    DecodeFrame(data, split_frame_offset_, split_frame_size_, false);
++  }
 +
 +  // Continue at the first frame that starts in this buffer.
 +  uint32_t next_input_offset = xma::GetPacketFrameOffset(current_input_buffer);
