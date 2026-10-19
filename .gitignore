@@ -1,0 +1,16 @@
+# Game data and everything generated from it: never commit these.
+game_root/
+*.iso
+*.xex
+app/generated/
+app/assets/secret/
+
+# Build output and run data
+app/out/
+out/
+hdd/
+logs/
+*.log
+__pycache__/
+*.exe
+*.dll

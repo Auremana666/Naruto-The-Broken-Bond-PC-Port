@@ -1,0 +1,3 @@
+*.patch -text
+*.bat eol=crlf
+*.ps1 eol=crlf

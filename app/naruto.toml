@@ -1,0 +1,94 @@
+# Naruto: The Broken Bond - settings. Press F1 in game to change them from the Options menu.
+
+# Display
+fullscreen = true
+vsync = true
+d3d12_allow_variable_refresh_rate_and_tearing = true
+video_mode_refresh_rate = 60.0
+
+# Graphics (internal resolution: 1 = 720p like the Xbox, 2 = 1440p, 3 = 4K)
+resolution_scale = 2
+draw_resolution_scale_x = 2
+draw_resolution_scale_y = 2
+swap_post_effect = "fxaa"
+anisotropic_override = 5
+
+# Audio
+audio_mute = false
+
+# Game language: 1 = English, 3 = German, 4 = French, 5 = Spanish, 6 = Italian.
+user_language = 1
+
+# Controls: keyboard plays as an Xbox 360 controller. Several keys per action: "J,LMB".
+input_backend = "sdl"
+mnk_mode = true
+# Player the keyboard controls when a controller is connected: auto (shares player 1), 1 or 2
+keyboard_player = "auto"
+mnk_mouse = false
+mnk_sensitivity = 1.0
+keybind_lstick_up = "W"
+keybind_lstick_down = "S"
+keybind_lstick_left = "A"
+keybind_lstick_right = "D"
+keybind_rstick_up = "Up"
+keybind_rstick_down = "Down"
+keybind_rstick_left = "Left"
+keybind_rstick_right = "Right"
+keybind_a = "Space"
+keybind_b = "L"
+keybind_x = "J"
+keybind_y = "K"
+keybind_left_shoulder = "Q"
+keybind_right_shoulder = "E"
+keybind_left_trigger = "Shift"
+keybind_right_trigger = "I"
+keybind_lstick_press = "F"
+keybind_rstick_press = "G"
+keybind_dpad_up = "1"
+keybind_dpad_down = "2"
+keybind_dpad_left = "3"
+keybind_dpad_right = "4"
+keybind_start = "Return"
+keybind_back = "Tab"
+keybind_guide = ""
+
+# Emulation (leave as is)
+gpu_plugin = "xenos"
+d3d12_readback_resolve = true
+execute_unclipped_draw_vs_on_cpu = true
+protect_zero = false
+log_level = "info"
+
+# Audio decoder. "master" is required: with "new" the Story Mode intro and fight endings wait forever.
+xma_decoder = "master"
+
+# Startup and overlay (also in the F1 PC Options menu)
+skip_intros = false
+show_fps = false
+bind_fps_counter = "F2"
+
+# Cheats (PC Options > Cheats). Fight Mode unlocks: Your save is not changed.
+unlock_all_characters = false
+unlock_all_arenas = false
+
+# Auto Jutsu (PC Options > Cheats > Auto Jutsu): one button performs the fighter's jutsu 1-4, in
+# the order its jutsu menu shows them. Hold to charge, let go to release. Keyboard:
+# auto_jutsu_key_N. Controller 1 and 2: hold LT (the jutsu menu) and press auto_jutsu_padP_N.
+auto_jutsu = false
+auto_jutsu_key_1 = "Numpad1"
+auto_jutsu_key_2 = "Numpad2"
+auto_jutsu_key_3 = "Numpad3"
+auto_jutsu_key_4 = "Numpad4"
+auto_jutsu_pad1_1 = "a"
+auto_jutsu_pad1_2 = "b"
+auto_jutsu_pad1_3 = "y"
+auto_jutsu_pad1_4 = "x"
+auto_jutsu_pad2_1 = "a"
+auto_jutsu_pad2_2 = "b"
+auto_jutsu_pad2_3 = "y"
+auto_jutsu_pad2_4 = "x"
+
+# PC title screen when the game starts (PC Options > Game).
+show_title_screen = true
+# Log files in logs/ (PC Options > Game, or Ctrl+F12 while playing).
+log_to_file = false

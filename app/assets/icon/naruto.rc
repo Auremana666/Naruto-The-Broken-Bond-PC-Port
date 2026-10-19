@@ -1,0 +1,8 @@
+// Windows resources: the program icon (Explorer, the taskbar and the window use icon 1), and the
+// title screen pictures and sound, and the menu font (Titan One, with its SIL OFL license),
+// kept inside the executable.
+1 ICON "naruto.ico"
+101 RCDATA "../title/naruto.png"
+104 RCDATA "../title/logo.png"
+105 RCDATA "../fonts/TitanOne-Regular.ttf"
+106 RCDATA "../fonts/TitanOne-OFL.txt"

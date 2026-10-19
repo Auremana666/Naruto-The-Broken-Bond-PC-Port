@@ -1,0 +1,1896 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9b3cdf5..24927fe 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -28,7 +28,11 @@ if(REXGLUE_ENABLE_TRACY)
+     add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PROFILING>)
+ endif()
+ if(REXGLUE_ENABLE_PERF_COUNTERS)
+-    add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
++    # Unconditional (including Release): the command processor measures the
++    # guest frame rate on every swap (XE_SWAP) and the FPS/debug overlays
++    # depend on it. The cost is a couple of relaxed atomics per guest frame;
++    # the CSV log stays opt-in via the perf_log_csv cvar.
++    add_compile_definitions(REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ # Graphics backend selection
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 8426798..ca051f9 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -251,6 +251,16 @@ class XmaContext {
+   uint8_t* GetCurrentInputBuffer(XMA_CONTEXT_DATA* data);
+ 
+   void Decode(XMA_CONTEXT_DATA* data);
++  // The original Xenia decoder (xma_context_master.cpp), used when xma_decoder = "master".
++  static bool UseMasterDecoder();
++  bool WorkMaster();
++  void ClearMaster();
++  void DecodeMaster(XMA_CONTEXT_DATA* data);
++  // Decodes the frame starting at frame_offset (bits from the start of the packet, header
++  // included) of the packet data staged in input_buffer_.
++  void DecodeFrame(XMA_CONTEXT_DATA* data, uint32_t frame_offset, uint32_t frame_size,
++                   bool is_loop_end_frame);
++  void SaveSplitFrame(const uint8_t* packet, uint32_t frame_offset, uint32_t frame_size);
+   void Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* data);
+   void UpdateLoopStatus(XMA_CONTEXT_DATA* data);
+   void ClearLocked(XMA_CONTEXT_DATA* data);
+@@ -306,6 +316,23 @@ class XmaContext {
+   bool carry_valid_ = false;
+   uint8_t pending_output_limit_ = 0;
+   uint8_t pending_start_skip_ = 0;
++
++  // A frame that runs past the end of the current input buffer while the other buffer is not
++  // valid yet. The buffer is consumed right away, as on hardware, and the head of the frame is
++  // kept here until the next buffer supplies the rest.
++  bool split_frame_pending_ = false;
++  uint32_t split_frame_offset_ = 0;  // bits from the start of the saved packet, header included
++  uint32_t split_frame_size_ = 0;    // 0 when the frame header itself is split
++  std::array<uint8_t, kBytesPerPacketData> split_packet_;
++
++  // Master decoder state.
++  uint32_t master_packets_skip_ = 0;
++  uint32_t master_split_frame_len_ = 0;
++  uint32_t master_split_frame_len_partial_ = 0;
++  uint8_t master_split_frame_padding_start_ = 0;
++
++  // xma_trace: when this context last logged its state.
++  std::chrono::steady_clock::time_point last_trace_time_{};
+ };
+ 
+ }  // namespace rex::audio
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..16843ad 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -1,4 +1,6 @@
+ #pragma once
++
++#include <functional>
+ /**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+@@ -42,6 +44,11 @@ class InputSystem : public system::IInputSystem {
+   /// Replaces any previous assignment. Call before the guest starts polling.
+   void SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment);
+ 
++  /// Called with each device's state before it is merged into its guest user's state, so an app
++  /// can remap buttons or add toggle/turbo per device. Call before the guest starts polling.
++  using DeviceStateFilter = std::function<void(const DeviceInfo& device, X_INPUT_STATE& state)>;
++  void SetDeviceStateFilter(DeviceStateFilter filter) { device_state_filter_ = std::move(filter); }
++
+   X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags, X_INPUT_CAPABILITIES* out_caps);
+   X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state);
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+@@ -59,6 +66,7 @@ class InputSystem : public system::IInputSystem {
+   std::vector<std::unique_ptr<InputDriver>> drivers_;
+ 
+   std::unique_ptr<DeviceAssignment> assignment_;
++  DeviceStateFilter device_state_filter_;
+   ActiveDeviceTracker active_devices_;
+ 
+   // Ordered by ordinal. Ordinals are never recycled, so unplugging pad one
+diff --git a/include/rex/logging/api.h b/include/rex/logging/api.h
+index be0497b..ad8ad1d 100644
+--- a/include/rex/logging/api.h
++++ b/include/rex/logging/api.h
+@@ -22,6 +22,7 @@
+ REXCVAR_DECLARE(std::string, log_level);
+ REXCVAR_DECLARE(std::string, log_file);
+ REXCVAR_DECLARE(bool, log_verbose);
++REXCVAR_DECLARE(bool, log_to_file);
+ REXCVAR_DECLARE(bool, log_noisy);
+ REXCVAR_DECLARE(int32_t, log_flush_interval);
+ REXCVAR_DECLARE(int32_t, log_max_file_size_mb);
+@@ -163,6 +164,16 @@ void SetAllLevels(spdlog::level::level_enum level);
+  */
+ void RegisterLogLevelCallback();
+ 
++/**
++ * Whether the automatic log file (logs/<app>_NNN.log) is being written.
++ */
++bool IsFileLogging();
++
++/**
++ * Start writing a new automatic log file, or stop writing it, while running.
++ */
++void SetFileLogging(bool enabled);
++
+ /**
+  * Add a sink to all current and future loggers.
+  *
+diff --git a/include/rex/ui/imgui_drawer.h b/include/rex/ui/imgui_drawer.h
+index a570fa0..00c9630 100644
+--- a/include/rex/ui/imgui_drawer.h
++++ b/include/rex/ui/imgui_drawer.h
+@@ -55,6 +55,8 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
+   // SetPresenter may be called from the destructor.
+   void SetPresenter(Presenter* new_presenter);
+   void SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer);
++  // The drawer that renders ImGui, for creating textures ImGui can draw (ImTextureID).
++  ImmediateDrawer* immediate_drawer() const { return immediate_drawer_; }
+   void SetPresenterAndImmediateDrawer(Presenter* new_presenter,
+                                       ImmediateDrawer* new_immediate_drawer) {
+     SetPresenter(new_presenter);
+diff --git a/src/audio/CMakeLists.txt b/src/audio/CMakeLists.txt
+index d55f16a..d857a6c 100644
+--- a/src/audio/CMakeLists.txt
++++ b/src/audio/CMakeLists.txt
+@@ -7,6 +7,7 @@ add_library(rexaudio OBJECT
+     audio_system.cpp
+     downmix.cpp
+     xma_context.cpp
++    xma_context_master.cpp
+     xma_decoder.cpp
+     xma_register_file.cpp
+     # NOP backend (always available)
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 20a2cd8..2e1ccd7 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -11,6 +11,9 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
++#include <chrono>
++#include <cmath>
+ #include <cstring>
+ 
+ #include <rex/assert.h>
+@@ -25,6 +28,16 @@
+ #include <SDL3/SDL.h>
+ 
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
++REXCVAR_DEFINE_BOOL(audio_stats, false, "Audio",
++                    "Log played/silent audio frames and the peak level every two seconds");
++
++namespace {
++// Diagnostics for audio_stats, updated from the SDL callback thread only.
++uint64_t g_stats_played = 0;
++uint64_t g_stats_silent = 0;
++float g_stats_peak = 0.0f;
++std::chrono::steady_clock::time_point g_stats_last{};
++}  // namespace
+ 
+ namespace rex::audio::sdl {
+ 
+@@ -186,6 +199,7 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+         REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
+         sdl_callback_count++;
+       }
++      ++g_stats_silent;
+       std::memset(data, 0, len);
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed while filling silence: {}", SDL_GetError());
+@@ -212,6 +226,12 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+             break;
+         }
+       }
++      if (REXCVAR_GET(audio_stats)) {
++        ++g_stats_played;
++        for (int i = 0; i < sample_count; ++i) {
++          g_stats_peak = std::max(g_stats_peak, std::fabs(data[i]));
++        }
++      }
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
+         driver->frames_unused_.push(buffer);
+@@ -225,6 +245,18 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     }
+   }
+   SDL_stack_free(data);
++
++  if (REXCVAR_GET(audio_stats)) {
++    const auto now = std::chrono::steady_clock::now();
++    if (now - g_stats_last >= std::chrono::seconds(2)) {
++      REXAPU_INFO("audio_stats: played {} frames, {} silent fills, peak {:.4f}", g_stats_played,
++                  g_stats_silent, g_stats_peak);
++      g_stats_played = 0;
++      g_stats_silent = 0;
++      g_stats_peak = 0.0f;
++      g_stats_last = now;
++    }
++  }
+ }
+ 
+ }  // namespace rex::audio::sdl
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..878350c 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -15,6 +15,7 @@
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/audio/xma/helpers.h>
++#include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+ #include <rex/memory/ring_buffer.h>
+@@ -36,6 +37,15 @@ extern "C" {
+ // Credits for most of this code goes to:
+ // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
+ 
++REXCVAR_DEFINE_BOOL(xma_trace, false, "Audio",
++                    "Log XMA input buffer swaps and decode stalls (diagnostics)");
++REXCVAR_DEFINE_STRING(xma_decoder, "new", "Audio",
++                      "XMA decoder: \"new\" or \"master\" (the original Xenia decoder; some games "
++                      "need it for cutscenes to advance past spoken lines)");
++REXCVAR_DEFINE_BOOL(xma_realign_output, true, "Audio",
++                    "Delay XMA output by the decoder start padding so loop points are exact. "
++                    "Holds each frame back until the next one is decoded.");
++
+ namespace rex::audio {
+ 
+ using stream::BitStream;
+@@ -93,6 +103,9 @@ int XmaContext::Setup(uint32_t id, memory::Memory* memory, uint32_t guest_ptr) {
+ }
+ 
+ bool XmaContext::Work() {
++  if (UseMasterDecoder()) {
++    return WorkMaster();
++  }
+   if (!is_allocated() || !is_enabled()) {
+     return false;
+   }
+@@ -104,6 +117,24 @@ bool XmaContext::Work() {
+   XMA_CONTEXT_DATA data(context_ptr);
+   const XMA_CONTEXT_DATA initial_data = data;
+ 
++  if (REXCVAR_GET(xma_trace)) {
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last_trace_time_ >= std::chrono::seconds(2)) {
++      last_trace_time_ = now;
++      REXAPU_INFO(
++          "xma_trace: ctx {} state in0={}({}) in1={}({}) cur={} read={} out_valid={} out r/w={}/{} "
++          "of {} sdc={} pad={} loop={} remaining_sub={} split={} err={}",
++          id(), uint32_t(data.input_buffer_0_valid), uint32_t(data.input_buffer_0_packet_count),
++          uint32_t(data.input_buffer_1_valid), uint32_t(data.input_buffer_1_packet_count),
++          uint32_t(data.current_buffer), uint32_t(data.input_buffer_read_offset),
++          uint32_t(data.output_buffer_valid), uint32_t(data.output_buffer_read_offset),
++          uint32_t(data.output_buffer_write_offset), uint32_t(data.output_buffer_block_count),
++          uint32_t(data.subframe_decode_count), uint32_t(data.output_buffer_padding),
++          uint32_t(data.loop_count), uint32_t(current_frame_remaining_subframes_),
++          split_frame_pending_, uint32_t(data.error_status));
++    }
++  }
++
+   if (!data.output_buffer_valid) {
+     return true;
+   }
+@@ -168,6 +199,10 @@ bool XmaContext::Block(bool poll) {
+ }
+ 
+ void XmaContext::Clear() {
++  if (UseMasterDecoder()) {
++    ClearMaster();
++    return;
++  }
+   std::lock_guard<std::mutex> lock(lock_);
+   REXAPU_NOISY_DEBUG("XmaContext: reset context {}", id());
+ 
+@@ -209,6 +244,11 @@ void XmaContext::ResetDecoderState() {
+   current_frame_remaining_subframes_ = 0;
+   loop_frame_output_limit_ = 0;
+   loop_start_skip_pending_ = false;
++  split_frame_pending_ = false;
++  master_packets_skip_ = 0;
++  master_split_frame_len_ = 0;
++  master_split_frame_len_partial_ = 0;
++  master_split_frame_padding_start_ = 0;
+ }
+ 
+ void XmaContext::Disable() {
+@@ -227,6 +267,12 @@ void XmaContext::Release() {
+ }
+ 
+ void XmaContext::SwapInputBuffer(XMA_CONTEXT_DATA* data) {
++  if (REXCVAR_GET(xma_trace)) {
++    REXAPU_INFO("xma_trace: consumed input buffer {} (other valid={})",
++                uint32_t(data->current_buffer),
++                uint32_t(data->current_buffer ? data->input_buffer_0_valid
++                                              : data->input_buffer_1_valid));
++  }
+   if (data->current_buffer == 0) {
+     data->input_buffer_0_valid = 0;
+   } else {
+@@ -567,6 +613,43 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   const uint32_t current_input_size = GetCurrentInputBufferSize(data);
+   const uint32_t current_input_packet_count = current_input_size / kBytesPerPacket;
+ 
++  // A frame left split at the end of the previous input buffer continues in the first packet of
++  // this one: finish it, then carry on from the first frame that starts in this buffer.
++  if (split_frame_pending_) {
++    split_frame_pending_ = false;
++  master_packets_skip_ = 0;
++  master_split_frame_len_ = 0;
++  master_split_frame_len_partial_ = 0;
++  master_split_frame_padding_start_ = 0;
++    std::memcpy(input_buffer_.data(), split_packet_.data(), kBytesPerPacketData);
++    std::memcpy(input_buffer_.data() + kBytesPerPacketData,
++                current_input_buffer + kBytesPerPacketHeader, kBytesPerPacketData);
++    uint32_t frame_size = split_frame_size_;
++    if (frame_size == 0) {
++      BitStream combined(input_buffer_.data(), (kBitsPerPacket - kBitsPerPacketHeader) * 2);
++      combined.SetOffset(split_frame_offset_ - kBitsPerPacketHeader);
++      frame_size = static_cast<uint32_t>(combined.Peek(kBitsPerFrameHeader));
++    }
++    if (REXCVAR_GET(xma_trace)) {
++      REXAPU_INFO("xma_trace: ctx {} finishing split frame (offset {}, {} bits) in buffer {}", id(),
++                  split_frame_offset_, frame_size, uint32_t(data->current_buffer));
++    }
++    if (frame_size != 0 && frame_size != xma::kMaxFrameLength) {
++      DecodeFrame(data, split_frame_offset_, frame_size, false);
++    }
++    uint32_t next_input_offset = xma::GetPacketFrameOffset(current_input_buffer);
++    if (next_input_offset > kMaxFrameSizeinBits) {
++      next_input_offset =
++          GetNextPacketReadOffset(current_input_buffer, 1, current_input_packet_count);
++      if (next_input_offset == kBitsPerPacketHeader) {
++        SwapInputBuffer(data);
++        return;
++      }
++    }
++    data->input_buffer_read_offset = next_input_offset;
++    return;
++  }
++
+   const int16_t packet_index = GetPacketNumber(current_input_size, data->input_buffer_read_offset);
+ 
+   if (packet_index == -1) {
+@@ -605,6 +688,10 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   if (packet_info.current_frame_size_ == 0) {
+     const uint8_t* next_packet = GetNextPacket(data, next_packet_index, current_input_packet_count);
+     if (!next_packet) {
++      // The header itself continues in the next buffer; finish the frame when it arrives.
++      if (!is_loop_end_frame) {
++        SaveSplitFrame(packet, relative_offset, 0);
++      }
+       SwapInputBuffer(data);
+       return;
+     }
+@@ -617,6 +704,11 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+ 
+     uint64_t frame_size = combined.Peek(kBitsPerFrameHeader);
+     if (frame_size == xma::kMaxFrameLength) {
++      if (REXCVAR_GET(xma_trace)) {
++        REXAPU_INFO("xma_trace: ctx {} split frame header is end marker at offset {} (packet {}/{})",
++                    id(), uint32_t(data->input_buffer_read_offset), packet_index,
++                    current_input_packet_count);
++      }
+       data->error_status = 4;
+       return;
+     }
+@@ -640,7 +732,23 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+       const uint8_t* next_packet =
+           GetNextPacket(data, next_packet_index, current_input_packet_count);
+       if (!next_packet) {
+-        data->error_status = 4;
++        if (REXCVAR_GET(xma_trace)) {
++          REXAPU_INFO(
++              "xma_trace: ctx {} last frame needs the next packet but none is valid: offset {} "
++              "packet {}/{} frame size {} bits left {} buffer {}",
++              id(), uint32_t(data->input_buffer_read_offset), packet_index,
++              current_input_packet_count, packet_info.current_frame_size_,
++              uint32_t(stream.BitsRemaining()), uint32_t(data->current_buffer));
++        }
++        if (is_loop_end_frame) {
++          data->error_status = 4;
++          return;
++        }
++        // Like the hardware, consume this buffer now and finish the frame when the next one
++        // arrives. Holding the buffer instead deadlocks streams that wait for it to be consumed
++        // before submitting more data (voice lines end that way and never report completion).
++        SaveSplitFrame(packet, relative_offset, packet_info.current_frame_size_);
++        SwapInputBuffer(data);
+         return;
+       }
+       std::memcpy(input_buffer_.data() + kBytesPerPacketData, next_packet + kBytesPerPacketHeader,
+@@ -650,13 +758,56 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+ 
+   std::memcpy(input_buffer_.data(), packet + kBytesPerPacketHeader, kBytesPerPacketData);
+ 
+-  stream = BitStream(input_buffer_.data(), (kBitsPerPacket - kBitsPerPacketHeader) * 2);
+-  stream.SetOffset(relative_offset - kBitsPerPacketHeader);
++  DecodeFrame(data, relative_offset, packet_info.current_frame_size_, is_loop_end_frame);
++
++  // Compute where to go next.
++  if (is_loop_end_frame) {
++    UpdateLoopStatus(data);
++    return;
++  }
++
++  if (!packet_info.isLastFrameInPacket()) {
++    const uint32_t next_frame_offset =
++        (data->input_buffer_read_offset + bits_to_copy) % kBitsPerPacket;
++    data->input_buffer_read_offset = (packet_index * kBitsPerPacket) + next_frame_offset;
++    return;
++  }
++
++  uint32_t next_input_offset =
++      GetNextPacketReadOffset(current_input_buffer, next_packet_index, current_input_packet_count);
++
++  if (next_input_offset == kBitsPerPacketHeader) {
++    SwapInputBuffer(data);
++    if (data->IsAnyInputBufferValid()) {
++      next_input_offset = xma::GetPacketFrameOffset(
++          memory()->TranslatePhysical(data->GetCurrentInputBufferAddress()));
++
++      if (next_input_offset > kMaxFrameSizeinBits) {
++        SwapInputBuffer(data);
++        return;
++      }
++    }
++  }
++  data->input_buffer_read_offset = next_input_offset;
++}
++
++void XmaContext::SaveSplitFrame(const uint8_t* packet, uint32_t frame_offset,
++                                uint32_t frame_size) {
++  std::memcpy(split_packet_.data(), packet + kBytesPerPacketHeader, kBytesPerPacketData);
++  split_frame_offset_ = frame_offset;
++  split_frame_size_ = frame_size;
++  split_frame_pending_ = true;
++}
++
++void XmaContext::DecodeFrame(XMA_CONTEXT_DATA* data, uint32_t frame_offset, uint32_t frame_size,
++                             bool is_loop_end_frame) {
++  BitStream stream(input_buffer_.data(), (kBitsPerPacket - kBitsPerPacketHeader) * 2);
++  stream.SetOffset(frame_offset - kBitsPerPacketHeader);
+ 
+   xma_frame_.fill(0);
+ 
+   const uint32_t padding_start =
+-      static_cast<uint8_t>(stream.Copy(xma_frame_.data() + 1, packet_info.current_frame_size_));
++      static_cast<uint8_t>(stream.Copy(xma_frame_.data() + 1, frame_size));
+ 
+   decoded_frame_.fill(0);
+ 
+@@ -665,7 +816,7 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     // old stream.
+     carry_valid_ = false;
+   }
+-  PreparePacket(packet_info.current_frame_size_, padding_start);
++  PreparePacket(frame_size, padding_start);
+   const bool decoded = DecodePacket(av_context_, av_packet_, av_frame_);
+   if (decoded) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+@@ -689,6 +840,17 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+                                  : 0;
+     loop_start_skip_pending_ = false;
+ 
++    if (!REXCVAR_GET(xma_realign_output)) {
++      // Emit each frame as soon as it is decoded, like Xenia: no frame is held back waiting
++      // for the next one, so a stream's final frame always reaches the output.
++      std::memcpy(raw_frame_.data(), decoded_frame_.data(), carry_bytes + pad_bytes);
++      current_frame_remaining_subframes_ = 4 << data->is_stereo;
++      loop_frame_output_limit_ = decoded_output_limit;
++      current_frame_remaining_subframes_ -=
++          std::min(decoded_start_skip, current_frame_remaining_subframes_);
++      carry_valid_ = false;
++      return;
++    }
+     if (carry_valid_) {
+       std::memcpy(raw_frame_.data(), carry_frame_.data(), carry_bytes);
+       std::memcpy(raw_frame_.data() + carry_bytes, decoded_frame_.data(), pad_bytes);
+@@ -708,36 +870,6 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     // two blocks that are not neighbors.
+     carry_valid_ = false;
+   }
+-
+-  // Compute where to go next.
+-  if (is_loop_end_frame) {
+-    UpdateLoopStatus(data);
+-    return;
+-  }
+-
+-  if (!packet_info.isLastFrameInPacket()) {
+-    const uint32_t next_frame_offset =
+-        (data->input_buffer_read_offset + bits_to_copy) % kBitsPerPacket;
+-    data->input_buffer_read_offset = (packet_index * kBitsPerPacket) + next_frame_offset;
+-    return;
+-  }
+-
+-  uint32_t next_input_offset =
+-      GetNextPacketReadOffset(current_input_buffer, next_packet_index, current_input_packet_count);
+-
+-  if (next_input_offset == kBitsPerPacketHeader) {
+-    SwapInputBuffer(data);
+-    if (data->IsAnyInputBufferValid()) {
+-      next_input_offset = xma::GetPacketFrameOffset(
+-          memory()->TranslatePhysical(data->GetCurrentInputBufferAddress()));
+-
+-      if (next_input_offset > kMaxFrameSizeinBits) {
+-        SwapInputBuffer(data);
+-        return;
+-      }
+-    }
+-  }
+-  data->input_buffer_read_offset = next_input_offset;
+ }
+ 
+ void XmaContext::ConvertFrame(const uint8_t** samples, bool is_two_channel,
+diff --git a/src/codegen/builders/helpers.h b/src/codegen/builders/helpers.h
+index dbc8d51..ab6a8e0 100644
+--- a/src/codegen/builders/helpers.h
++++ b/src/codegen/builders/helpers.h
+@@ -294,7 +294,7 @@ inline void emitAtomicLoadReserve(BuilderContext& ctx, const char* ptr_type, con
+  * @param ctx The builder context
+  * @param ptr_type The pointer type (e.g., "uint32_t", "uint64_t")
+  * @param bswap_func The byte-swap builtin (e.g., "__builtin_bswap32")
+- * @param field The register field (e.g., "s32", "s64")
++ * @param field The register field (e.g., "u32", "u64")
+  */
+ inline void emitAtomicStoreConditional(BuilderContext& ctx, const char* ptr_type,
+                                        const char* bswap_func, const char* field) {
+@@ -305,11 +305,11 @@ inline void emitAtomicStoreConditional(BuilderContext& ctx, const char* ptr_type
+   ctx.println("\t{}.lt = 0;", ctx.cr(0));
+   ctx.println("\t{}.gt = 0;", ctx.cr(0));
+   ctx.println(
+-      "\t{}.eq = __sync_bool_compare_and_swap(reinterpret_cast<{}*>(REX_RAW_ADDR({})), "
+-      "{}.{}, {}({}.{}));",
++      "\t{}.eq = reinterpret_cast<std::atomic<{}>*>(REX_RAW_ADDR({}))"
++      "->compare_exchange_strong({}.{}, {}({}.{}), "
++      "std::memory_order_acq_rel, std::memory_order_acquire);",
+       ctx.cr(0), ptr_type, ctx.ea(), ctx.reserved(), field, bswap_func, ctx.r(ctx.insn.operands[0]),
+       field);
+-  ctx.println("\t{}.so = {}.so;", ctx.cr(0), ctx.xer());
+ }
+ 
+ //=============================================================================
+diff --git a/src/codegen/builders/memory.cpp b/src/codegen/builders/memory.cpp
+index 3dd7fa5..a20762c 100644
+--- a/src/codegen/builders/memory.cpp
++++ b/src/codegen/builders/memory.cpp
+@@ -409,12 +409,12 @@ bool build_stwbrx(BuilderContext& ctx) {
+ //=============================================================================
+ 
+ bool build_stwcx(BuilderContext& ctx) {
+-  emitAtomicStoreConditional(ctx, "uint32_t", "__builtin_bswap32", "s32");
++  emitAtomicStoreConditional(ctx, "uint32_t", "__builtin_bswap32", "u32");
+   return true;
+ }
+ 
+ bool build_stdcx(BuilderContext& ctx) {
+-  emitAtomicStoreConditional(ctx, "uint64_t", "__builtin_bswap64", "s64");
++  emitAtomicStoreConditional(ctx, "uint64_t", "__builtin_bswap64", "u64");
+   return true;
+ }
+ 
+diff --git a/src/codegen/builders/system.cpp b/src/codegen/builders/system.cpp
+index b2d70f5..f560429 100644
+--- a/src/codegen/builders/system.cpp
++++ b/src/codegen/builders/system.cpp
+@@ -31,20 +31,32 @@ bool build_attn(BuilderContext& ctx) {
+ }
+ 
+ bool build_sync(BuilderContext& ctx) {
+-  // Memory barrier, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  // sync: full barrier. Orders all combinations including StoreLoad,
++  // which x86_64 TSO does not. seq_cst is the exact C++ mapping.
++  //
++  // x86_64: emits mfence.
++  // ARM64:  emits dmb ish.
++  ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+   return true;
+ }
+ 
+ bool build_lwsync(BuilderContext& ctx) {
+-  // Lightweight memory barrier, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  // lwsync: acquire-release fence. Orders LoadLoad, LoadStore, StoreStore,
++  // but NOT StoreLoad. acq_rel matches exactly.
++  //
++  // x86_64: TSO already orders those three.
++  // ARM64:  emits dmb ish.
++  ctx.println("\tstd::atomic_thread_fence(std::memory_order_acq_rel);");
+   return true;
+ }
+ 
+ bool build_eieio(BuilderContext& ctx) {
+-  // Enforce in-order execution of I/O, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  // eieio: I/O ordering. No separate I/O space on the host, so seq_cst
++  // is the safe conservative mapping.
++  //
++  // x86_64: emits mfence.
++  // ARM64:  emits dmb ish.
++  ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+   return true;
+ }
+ 
+@@ -249,8 +261,6 @@ bool build_mflr(BuilderContext& ctx) {
+ 
+ bool build_mfmsr(BuilderContext& ctx) {
+   if (!ctx.config().skipMsr) {
+-    // Memory barrier for MSR read
+-    ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+     // Check global lock and return appropriate value
+     // Returns 0x8000 if unlocked (interrupts enabled), 0 if locked
+     ctx.println("\t{}.u64 = REX_CHECK_GLOBAL_LOCK();", ctx.r(ctx.insn.operands[0]));
+@@ -317,8 +327,6 @@ bool build_mtlr(BuilderContext& ctx) {
+ 
+ bool build_mtmsrd(BuilderContext& ctx) {
+   if (!ctx.config().skipMsr) {
+-    // Memory barrier for MSR write
+-    ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+     // Update MSR bits
+     ctx.println("\tctx.msr = ({}.u32 & 0x8020) | (ctx.msr & ~0x8020);",
+                 ctx.r(ctx.insn.operands[0]));
+diff --git a/src/codegen/builders/vector.cpp b/src/codegen/builders/vector.cpp
+index cbdd7f7..2e0070a 100644
+--- a/src/codegen/builders/vector.cpp
++++ b/src/codegen/builders/vector.cpp
+@@ -1098,14 +1098,14 @@ bool build_vpkuhus(BuilderContext& ctx) {
+   // NOTE(tomc): _mm_packus_epi16 treats inputs as signed, so we need custom saturation for
+   // unsigned. Unsigned halfwords >= 0x8000 would be interpreted as negative and clamped to 0
+   // instead of 0xFF.
++  // vD can alias vA/vB, so pack into vTemp first.
+   for (size_t i = 0; i < 8; i++) {
+-    ctx.println("\t{}.u8[{}] = {}.u16[{}] > 0xFF ? 0xFF : (uint8_t){}.u16[{}];",
+-                ctx.v(ctx.insn.operands[0]), 15 - i, ctx.v(ctx.insn.operands[1]), 7 - i,
+-                ctx.v(ctx.insn.operands[1]), 7 - i);
+-    ctx.println("\t{}.u8[{}] = {}.u16[{}] > 0xFF ? 0xFF : (uint8_t){}.u16[{}];",
+-                ctx.v(ctx.insn.operands[0]), 7 - i, ctx.v(ctx.insn.operands[2]), 7 - i,
+-                ctx.v(ctx.insn.operands[2]), 7 - i);
++    ctx.println("\t{}.u8[{}] = {}.u16[{}] > 0xFF ? 0xFF : (uint8_t){}.u16[{}];", ctx.v_temp(),
++                15 - i, ctx.v(ctx.insn.operands[1]), 7 - i, ctx.v(ctx.insn.operands[1]), 7 - i);
++    ctx.println("\t{}.u8[{}] = {}.u16[{}] > 0xFF ? 0xFF : (uint8_t){}.u16[{}];", ctx.v_temp(),
++                7 - i, ctx.v(ctx.insn.operands[2]), 7 - i, ctx.v(ctx.insn.operands[2]), 7 - i);
+   }
++  ctx.println("\t{} = {};", ctx.v(ctx.insn.operands[0]), ctx.v_temp());
+   return true;
+ }
+ 
+@@ -1126,14 +1126,14 @@ bool build_vpkuwus(BuilderContext& ctx) {
+ 
+   // NOTE(tomc): _mm_packus_epi32 treats inputs as signed, so we need custom saturation for unsigned
+   // Saturate each u32 to [0, 0xFFFF], then pack to u16
++  // vD can alias vA/vB, so pack into vTemp first.
+   for (size_t i = 0; i < 4; i++) {
+-    ctx.println("\t{}.u16[{}] = {}.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t){}.u32[{}];",
+-                ctx.v(ctx.insn.operands[0]), 7 - i, ctx.v(ctx.insn.operands[1]), 3 - i,
+-                ctx.v(ctx.insn.operands[1]), 3 - i);
+-    ctx.println("\t{}.u16[{}] = {}.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t){}.u32[{}];",
+-                ctx.v(ctx.insn.operands[0]), 3 - i, ctx.v(ctx.insn.operands[2]), 3 - i,
+-                ctx.v(ctx.insn.operands[2]), 3 - i);
++    ctx.println("\t{}.u16[{}] = {}.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t){}.u32[{}];", ctx.v_temp(),
++                7 - i, ctx.v(ctx.insn.operands[1]), 3 - i, ctx.v(ctx.insn.operands[1]), 3 - i);
++    ctx.println("\t{}.u16[{}] = {}.u32[{}] > 0xFFFF ? 0xFFFF : (uint16_t){}.u32[{}];", ctx.v_temp(),
++                3 - i, ctx.v(ctx.insn.operands[2]), 3 - i, ctx.v(ctx.insn.operands[2]), 3 - i);
+   }
++  ctx.println("\t{} = {};", ctx.v(ctx.insn.operands[0]), ctx.v_temp());
+   return true;
+ }
+ 
+diff --git a/src/codegen/project_recompiler.cpp b/src/codegen/project_recompiler.cpp
+index 240bcb0..903c842 100644
+--- a/src/codegen/project_recompiler.cpp
++++ b/src/codegen/project_recompiler.cpp
+@@ -262,6 +262,12 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+                    *runtime->kernel_state()->GetExecutableModule()->xex_module());
+ 
+   std::vector<rex::system::object_ref<rex::system::UserModule>> dllModules;
++  // Snapshot each DLL's in-memory image right after it is loaded: a later
++  // DLL may share the same load address (an alternative-version module
++  // pair, e.g. ai2c.dll and the ai2c@2.dll shipped inside a DLC), and that
++  // later load would clobber this module's bytes before BinaryView gets a
++  // chance to copy them in the context-creation loop below.
++  std::vector<BinaryView> dllBinaryViews;
+   for (size_t i = 1; i < targeted.size(); ++i) {
+     const auto& dllConfig = targeted[i].config;
+     fs::path dllXexPath = configDir / dllConfig.filePath;
+@@ -290,6 +296,7 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+     auto dll_display_name = std::filesystem::path(targeted[i].config.filePath).filename().string();
+     ReportBinaryInfo(opts.reporter, dll_display_name, *userMod->xex_module());
+     dllModules.push_back(std::move(userMod));
++    dllBinaryViews.push_back(BinaryView::fromModule(*dllModules.back()->xex_module()));
+   }
+ 
+   struct ContextEntry {
+@@ -329,8 +336,7 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+   }
+ 
+   for (size_t i = 0; i < dllModules.size(); ++i) {
+-    auto& userMod = dllModules[i];
+-    auto bv = BinaryView::fromModule(*userMod->xex_module());
++    auto bv = std::move(dllBinaryViews[i]);
+ 
+     auto dll_display = make_display_name(targeted[i + 1].config.filePath);
+     RecompilerConfig cfg = std::move(targeted[i + 1].config);
+@@ -403,6 +409,19 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
+       uint32_t b_base = contexts[j].ctx.binary().baseAddress();
+       uint32_t b_end = b_base + contexts[j].ctx.binary().imageSize();
+       if (a_base < b_end && b_base < a_end) {
++        // Alternative-version DLL pairs (e.g. ai2c.dll and the ai2c@2.dll
++        // shipped inside a DLC) share the same load address. The game only
++        // ever loads one of them per session, and the runtime keys
++        // recompiled module libraries by guest path, so overlap between two
++        // DLL modules is expected and safe.
++        if (contexts[i].module->isDll && contexts[j].module->isDll) {
++          REXCODEGEN_WARN(
++              "DLL modules '{}' [{:08X}, {:08X}) and '{}' [{:08X}, {:08X}) overlap; "
++              "treating them as alternative versions of the same module",
++              contexts[i].module->targetName, a_base, a_end,
++              contexts[j].module->targetName, b_base, b_end);
++          continue;
++        }
+         return Err<void>(ErrorCategory::Validation,
+                          fmt::format("Module '{}' [{:08X}, {:08X}) overlaps '{}' [{:08X}, {:08X})",
+                                      contexts[i].module->targetName, a_base, a_end,
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index 1645848..3c2368e 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -38,6 +38,8 @@ REXCVAR_DEFINE_STRING(log_level, "info", "Log",
+     .allowed({"trace", "debug", "info", "warn", "error", "critical", "off"});
+ 
+ REXCVAR_DEFINE_STRING(log_file, "", "Log", "Log file path (empty = auto sequential naming)");
++REXCVAR_DEFINE_BOOL(log_to_file, true, "Log",
++                    "Write a log file in logs/ (with log_file empty); can be switched while running");
+ 
+ REXCVAR_DEFINE_BOOL(log_verbose, false, "Log", "Enable verbose logging (sets level to trace)")
+     .debug_only();
+@@ -220,7 +222,7 @@ void InitLogging(const LogConfig& config) {
+   std::string resolved_path;
+   if (config.log_file) {
+     resolved_path = config.log_file;
+-  } else if (!config.app_name.empty()) {
++  } else if (!config.app_name.empty() && REXCVAR_GET(log_to_file)) {
+     auto log_dir = config.log_dir.empty() ? std::filesystem::current_path() / "logs"
+                                           : std::filesystem::path(config.log_dir);
+     resolved_path = NextSequentialLogPath(log_dir, config.app_name).string();
+@@ -414,6 +416,41 @@ void RegisterLogLevelCallback() {
+   });
+ }
+ 
++bool IsFileLogging() {
++  std::lock_guard lock(g_mutex);
++  return g_file_sink != nullptr;
++}
++
++void SetFileLogging(bool enabled) {
++  std::lock_guard lock(g_mutex);
++  if (enabled == (g_file_sink != nullptr))
++    return;
++  if (enabled) {
++    if (g_config.app_name.empty())
++      return;  // only the automatic logs/ file can be switched on later
++    auto log_dir = g_config.log_dir.empty() ? std::filesystem::current_path() / "logs"
++                                            : std::filesystem::path(g_config.log_dir);
++    auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
++        NextSequentialLogPath(log_dir, g_config.app_name).string(),
++        static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024,
++        static_cast<size_t>(REXCVAR_GET(log_max_files)), false);
++    sink->set_level(spdlog::level::trace);
++    sink->set_pattern(g_config.file_pattern);
++    g_file_sink = sink;
++    for (auto& entry : g_registry) {
++      if (entry.logger)
++        entry.logger->sinks().push_back(sink);
++    }
++  } else {
++    g_file_sink->flush();
++    for (auto& entry : g_registry) {
++      if (entry.logger)
++        std::erase(entry.logger->sinks(), g_file_sink);
++    }
++    g_file_sink.reset();
++  }
++}
++
+ void AddSink(spdlog::sink_ptr sink) {
+   std::lock_guard lock(g_mutex);
+   g_extra_sinks.push_back(sink);
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..8c49309 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -1984,6 +1984,13 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // Ultrawide: o guest renderiza anamorfico para o aspecto alvo, entao o
++  // presenter recebe esse aspecto (so no host; VdQueryVideoMode fica intacto).
++  const double target_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
++  if (target_aspect > 0.0) {
++    display_height = 720;
++    display_width = uint32_t(std::clamp(target_aspect * 720.0, 1.0, 16384.0));
++  }
+ 
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+diff --git a/src/graphics/util/draw_extent_estimator.cpp b/src/graphics/util/draw_extent_estimator.cpp
+index 3027dc8..5728d6a 100644
+--- a/src/graphics/util/draw_extent_estimator.cpp
++++ b/src/graphics/util/draw_extent_estimator.cpp
+@@ -24,7 +24,11 @@
+ #include <rex/memory.h>
+ #include <rex/ui/graphics_util.h>
+ 
+-REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, false, "GPU",
++// Piscada preta nas lutas: sem isso, draws fullscreen com clipping
++// desligado fazem o estimador de extensao alegar o EDRAM inteiro, e as
++// transferencias de ownership espurias entre render targets do host
++// corrompem o buffer de cena. Tambem e o default do Xenia upstream.
++REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, true, "GPU",
+                     "Execute unclipped draw vertex shader on CPU");
+ 
+ REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..108203c 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -2407,6 +2407,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // Ultrawide: o guest renderiza anamorfico para o aspecto alvo, entao o
++  // presenter recebe esse aspecto (so no host; VdQueryVideoMode fica intacto).
++  const double target_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
++  if (target_aspect > 0.0) {
++    display_height = 720;
++    display_width = uint32_t(std::clamp(target_aspect * 720.0, 1.0, 16384.0));
++  }
+ 
+   presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..5343493 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -233,6 +233,11 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+     if (driver->GetDeviceState(id, &state) != X_ERROR_SUCCESS) {
+       continue;
+     }
++    if (device_state_filter_) {
++      if (const DeviceInfo* info = DeviceInfoFor(id)) {
++        device_state_filter_(*info, state);
++      }
++    }
+     active_devices_.Observe(user_index, id, state.gamepad);
+     if (!any) {
+       merged = state;
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 3f9422d..732c5fd 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -66,11 +66,12 @@ namespace {
+ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
+ 
+ // Bind values are a comma-separated list of alternatives, each optionally
+-// carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+-// so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+-// it. That is what lets the D-pad share the arrow keys. A consequence is
+-// that binding a bare modifier name ("Shift") can never fire, since holding it
+-// makes the live mask non-zero while the bind wants zero.
++// carrying modifier prefixes: "Q,I" or "Shift+W". A modifier that some bind uses
++// as a prefix is matched exactly, so "Up" stays silent while Shift is held and
++// "Shift+Up" stays silent without it; that is what lets the D-pad share the
++// arrow keys. Modifiers no bind uses as a prefix are ignored, so a button bound
++// to Shift can be held while other keys are pressed, and a bare modifier name
++// ("Shift") works as a button of its own.
+ constexpr uint8_t kModShift = 1u << 0;
+ constexpr uint8_t kModCtrl = 1u << 1;
+ constexpr uint8_t kModAlt = 1u << 2;
+@@ -122,17 +123,41 @@ std::string_view TrimSpaces(std::string_view s) {
+   return s;
+ }
+ 
+-bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
++bool IsModifierKey(rex::ui::VirtualKey vk) {
++  using rex::ui::VirtualKey;
++  return vk == VirtualKey::kShift || vk == VirtualKey::kControl || vk == VirtualKey::kMenu ||
++         vk == VirtualKey::kLShift || vk == VirtualKey::kRShift || vk == VirtualKey::kLControl ||
++         vk == VirtualKey::kRControl || vk == VirtualKey::kLMenu || vk == VirtualKey::kRMenu;
++}
++
++// prefix_mods: the modifiers that at least one bind uses as a prefix.
++bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods,
++                  uint8_t prefix_mods) {
+   uint8_t want = TakeModifiers(token);
+-  if (want != live_mods) {
+-    return false;
+-  }
+   rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
+   if (vk == rex::ui::VirtualKey::kNone) {
+     return false;
+   }
+   uint16_t idx = static_cast<uint16_t>(vk);
+-  return idx < 256 && key_down[idx];
++  if (idx >= 256 || !key_down[idx]) {
++    return false;
++  }
++  if (want == 0 && IsModifierKey(vk)) {
++    return true;
++  }
++  return (live_mods & want) == want && (live_mods & prefix_mods & ~want) == 0;
++}
++
++// The modifier prefixes used anywhere in a bind value.
++uint8_t PrefixModifiers(std::string_view value) {
++  uint8_t mods = 0;
++  while (!value.empty()) {
++    size_t comma = value.find(',');
++    std::string_view token = TrimSpaces(value.substr(0, comma));
++    value = comma == std::string_view::npos ? std::string_view() : value.substr(comma + 1);
++    mods |= TakeModifiers(token);
++  }
++  return mods;
+ }
+ 
+ std::atomic<bool> mouse_look_active{true};
+@@ -200,7 +225,8 @@ bool MnkInputDriver::IsEnabled() const {
+   return REXCVAR_GET(mnk_mode);
+ }
+ 
+-static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val) {
++static bool IsBindPressed(const bool (&key_down)[256], uint8_t prefix_mods,
++                          const std::string& cvar_val) {
+   const uint8_t live_mods = LiveModifiers(key_down);
+   std::string_view rest(cvar_val);
+   while (!rest.empty()) {
+@@ -212,7 +238,7 @@ static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_v
+       rest.remove_prefix(comma + 1);
+     }
+     token = TrimSpaces(token);
+-    if (!token.empty() && TokenPressed(key_down, token, live_mods)) {
++    if (!token.empty() && TokenPressed(key_down, token, live_mods, prefix_mods)) {
+       return true;
+     }
+   }
+@@ -274,61 +300,66 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+ 
+   std::lock_guard lock(state_mutex_);
+ 
++  uint8_t prefix_mods = 0;
++  for (const std::string* value : {&REXCVAR_GET(keybind_a), &REXCVAR_GET(keybind_b), &REXCVAR_GET(keybind_back), &REXCVAR_GET(keybind_dpad_down), &REXCVAR_GET(keybind_dpad_left), &REXCVAR_GET(keybind_dpad_right), &REXCVAR_GET(keybind_dpad_up), &REXCVAR_GET(keybind_guide), &REXCVAR_GET(keybind_left_shoulder), &REXCVAR_GET(keybind_left_trigger), &REXCVAR_GET(keybind_lstick_down), &REXCVAR_GET(keybind_lstick_left), &REXCVAR_GET(keybind_lstick_press), &REXCVAR_GET(keybind_lstick_right), &REXCVAR_GET(keybind_lstick_up), &REXCVAR_GET(keybind_right_shoulder), &REXCVAR_GET(keybind_right_trigger), &REXCVAR_GET(keybind_rstick_down), &REXCVAR_GET(keybind_rstick_left), &REXCVAR_GET(keybind_rstick_press), &REXCVAR_GET(keybind_rstick_right), &REXCVAR_GET(keybind_rstick_up), &REXCVAR_GET(keybind_start), &REXCVAR_GET(keybind_x), &REXCVAR_GET(keybind_y)}) {
++    prefix_mods |= PrefixModifiers(*value);
++  }
++
+   uint16_t buttons = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_a)))
+     buttons |= X_INPUT_GAMEPAD_A;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_b)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_b)))
+     buttons |= X_INPUT_GAMEPAD_B;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_x)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_x)))
+     buttons |= X_INPUT_GAMEPAD_X;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_y)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_y)))
+     buttons |= X_INPUT_GAMEPAD_Y;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_left_shoulder)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_left_shoulder)))
+     buttons |= X_INPUT_GAMEPAD_LEFT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_right_shoulder)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_right_shoulder)))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_press)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_lstick_press)))
+     buttons |= X_INPUT_GAMEPAD_LEFT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_press)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_rstick_press)))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_back)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_back)))
+     buttons |= X_INPUT_GAMEPAD_BACK;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_start)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_start)))
+     buttons |= X_INPUT_GAMEPAD_START;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_guide)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_guide)))
+     buttons |= X_INPUT_GAMEPAD_GUIDE;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_up)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_dpad_up)))
+     buttons |= X_INPUT_GAMEPAD_DPAD_UP;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_down)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_dpad_down)))
+     buttons |= X_INPUT_GAMEPAD_DPAD_DOWN;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_left)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_dpad_left)))
+     buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_dpad_right)))
+     buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
+ 
+-  uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
+-  uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
++  uint8_t lt = IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
++  uint8_t rt = IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
+ 
+   int32_t lx = 0;
+   int32_t ly = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_left)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_lstick_left)))
+     lx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_right)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_lstick_right)))
+     lx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_up)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_lstick_up)))
+     ly += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_down)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_lstick_down)))
+     ly -= INT16_MAX;
+ 
+   int32_t rx = 0;
+   int32_t ry = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_left)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_rstick_left)))
+     rx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_right)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_rstick_right)))
+     rx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_up)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_rstick_up)))
+     ry += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
++  if (IsBindPressed(key_down_, prefix_mods, REXCVAR_GET(keybind_rstick_down)))
+     ry -= INT16_MAX;
+ 
+   if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+index 3f1a852..c584f1b 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -133,6 +133,18 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+     return X_STATUS_OBJECT_NAME_INVALID;
+   }
+ 
++  // ObDosDevices pseudo-handle carries no directory object, so bare relative
++  // paths would reach the VFS without a device prefix and fail with noisy
++  // device-not-found errors. On hardware these resolve against the game
++  // drive; route them to the same mount so they get a clean NO_SUCH_FILE.
++  if (object_attrs->root_directory == 0xFFFFFFFD && !target_path.empty() &&
++      target_path.front() != '\\' && target_path.find(':') == std::string::npos) {
++    if (target_path.back() == '\\') {
++      target_path.pop_back();
++    }
++    target_path = "game:\\" + target_path;
++  }
++
+   if (object_attrs->root_directory != 0xFFFFFFFD &&  // ObDosDevices
+       object_attrs->root_directory != 0) {
+     auto root_file = REX_KERNEL_OBJECTS()->LookupObject<XFile>(object_attrs->root_directory);
+@@ -169,8 +181,22 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+ 
+   *handle_out = handle;
+   if (XFAILED(result)) {
+-    REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
++    auto* thread = XThread::GetCurrentThread();
++    auto* context = thread ? thread->thread_state()->context() : nullptr;
++    REXKRNL_IMPORT_FAIL(
++        "NtCreateFile",
++        "path='{}' root_handle={:#x} root_path='{}' access={:#x} attrs={:#x} "
++        "share={:#x} disposition={:#x} options={:#x} guest_lr={:08X} guest_sp={:08X} -> {:#x}",
++            target_path, uint32_t(object_attrs->root_directory),
++            root_entry ? root_entry->absolute_path() : "<none>", uint32_t(desired_access),
++            uint32_t(file_attributes), uint32_t(share_access), uint32_t(creation_disposition),
++            uint32_t(create_options), context ? uint32_t(context->lr) : 0,
++            context ? context->r1.u32 : 0, result);
+   } else {
++    auto* thread = XThread::GetCurrentThread();
++    auto* context = thread ? thread->thread_state()->context() : nullptr;
++    REXKRNL_IMPORT_TRACE("NtCreateFile", "path='{}' handle={:#x} guest_lr={:08X}",
++                         target_path, handle, context ? uint32_t(context->lr) : 0);
+     REXKRNL_IMPORT_RESULT("NtCreateFile", "{:#x} handle={:#x}", result, handle);
+   }
+   return result;
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_memory.cpp b/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
+index 8684eda..30c5fdf 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
+@@ -12,9 +12,11 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <atomic>
+ #include <cstring>
+ 
+ #include <rex/assert.h>
++#include <rex/cvar.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+@@ -22,10 +24,31 @@
+ #include <rex/types.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xtypes.h>
++#include <rex/system/xthread.h>
++
++REXCVAR_DEFINE_BOOL(trace_physical_memory, false, "Memory",
++                    "Log physical allocations, address conversions and frees with guest callers");
+ 
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ 
++namespace {
++// Sequence numbers correlate events across threads; they do not serialize heap operations.
++std::atomic<uint64_t> physical_memory_event{0};
++
++void TracePhysicalMemory(const char* operation, uint32_t address, uint32_t physical_address,
++                         uint32_t size, uint32_t heap_base, bool success) {
++  auto* thread = XThread::GetCurrentThread();
++  auto* context = thread ? thread->thread_state()->context() : nullptr;
++  REXKRNL_INFO(
++      "[PhysicalMemory] event={} op={} addr={:08X} physical={:08X} size={:X} "
++      "heap={:08X} success={} guest_thread={:X} guest_lr={:08X} guest_sp={:08X}",
++      physical_memory_event.fetch_add(1, std::memory_order_relaxed), operation, address,
++      physical_address, size, heap_base, success, thread ? thread->thread_id() : 0,
++      context ? uint32_t(context->lr) : 0, context ? context->r1.u32 : 0);
++}
++}  // namespace
++
+ uint32_t ToXdkProtectFlags(uint32_t protect) {
+   uint32_t result = 0;
+   if (!(protect & memory::kMemoryProtectRead) && !(protect & memory::kMemoryProtectWrite)) {
+@@ -282,6 +305,9 @@ u32 NtFreeVirtualMemory_entry(mapped_u32 base_addr_ptr, mapped_u32 region_size_p
+     result = heap->Release(base_addr_value, &region_size_value);
+   }
+   if (!result) {
++    REXKRNL_IMPORT_FAIL("NtFreeVirtualMemory", "base={:#x} size={:#x} type={:#x} debug={}",
++                        base_addr_value, region_size_value, uint32_t(free_type),
++                        uint32_t(debug_memory));
+     return X_STATUS_UNSUCCESSFUL;
+   }
+ 
+@@ -400,8 +426,22 @@ u32 MmAllocatePhysicalMemoryEx_entry(u32 flags, u32 region_size, u32 protect_bit
+   if (!heap->AllocRange(heap_min_addr, heap_max_addr, adjusted_size, adjusted_alignment,
+                         allocation_type, protect, top_down, &base_address)) {
+     // Failed - assume no memory available.
++    if (REXCVAR_GET(trace_physical_memory)) {
++      TracePhysicalMemory("allocate-failed", 0, UINT32_MAX, adjusted_size, heap_base, false);
++    }
+     return 0;
+   }
++  if (REXCVAR_GET(trace_physical_memory)) {
++    TracePhysicalMemory("allocate", base_address, heap->GetPhysicalAddress(base_address),
++                        adjusted_size, heap_base, true);
++    REXKRNL_INFO(
++        "[PhysicalMemory] allocation addr={:08X} requested_size={:X} flags={:X} "
++        "protect={:X} page_size={:X} alignment={:X} adjusted_alignment={:X} "
++        "min={:08X} max={:08X} heap_min={:08X} heap_max={:08X} physical_offset={:X}",
++        base_address, uint32_t(region_size), uint32_t(flags), uint32_t(protect_bits),
++        page_size, uint32_t(alignment), adjusted_alignment, uint32_t(min_addr_range),
++        uint32_t(max_addr_range), heap_min_addr, heap_max_addr, heap_physical_address_offset);
++  }
+   REXKRNL_IMPORT_RESULT("MmAllocatePhysicalMemoryEx", "addr={:#x}", base_address);
+ 
+   return base_address;
+@@ -418,7 +458,33 @@ void MmFreePhysicalMemory_entry(u32 type, u32 base_address) {
+   assert_true((base_address & 0x1F) == 0);
+ 
+   auto heap = REX_KERNEL_MEMORY()->LookupHeap(base_address);
+-  heap->Release(base_address);
++  const bool trace = REXCVAR_GET(trace_physical_memory);
++  if (trace) {
++    memory::HeapAllocationInfo info{};
++    const bool queried = heap->QueryRegionInfo(base_address, &info);
++    TracePhysicalMemory("free-request", base_address,
++                        REX_KERNEL_MEMORY()->GetPhysicalAddress(base_address),
++                        queried ? info.region_size : 0, heap->heap_base(), queried);
++    REXKRNL_INFO(
++        "[PhysicalMemory] free addr={:08X} type={:X} query_success={} "
++        "region_base={:08X} allocation_base={:08X} region_size={:X} state={:X}",
++        uint32_t(base_address), uint32_t(type), queried, info.base_address,
++        info.allocation_base, info.region_size, info.state);
++  }
++  const bool released = heap->Release(base_address);
++  if (trace) {
++    TracePhysicalMemory("free-result", base_address,
++                        REX_KERNEL_MEMORY()->GetPhysicalAddress(base_address), 0,
++                        heap->heap_base(), released);
++  }
++  if (!released) {
++    auto* thread = XThread::GetCurrentThread();
++    auto* context = thread ? thread->thread_state()->context() : nullptr;
++    REXKRNL_IMPORT_FAIL("MmFreePhysicalMemory",
++                        "type={:#x} addr={:#x} guest_lr={:08X} guest_sp={:08X}",
++                        uint32_t(type), uint32_t(base_address),
++                        context ? uint32_t(context->lr) : 0, context ? context->r1.u32 : 0);
++  }
+ }
+ 
+ u32 MmQueryAddressProtect_entry(u32 base_address) {
+@@ -560,10 +626,16 @@ u32 MmQueryStatistics_entry(ppc_ptr_t<X_MM_QUERY_STATISTICS_RESULT> stats_ptr) {
+ u32 MmGetPhysicalAddress_entry(u32 base_address) {
+   // base_address = result of MmAllocatePhysicalMemory.
+   uint32_t physical_address = REX_KERNEL_MEMORY()->GetPhysicalAddress(base_address);
++  const bool valid_physical_address = physical_address != UINT32_MAX;
+   assert_true(physical_address != UINT32_MAX);
+   if (physical_address == UINT32_MAX) {
+     physical_address = 0;
+   }
++  if (REXCVAR_GET(trace_physical_memory)) {
++    auto* heap = REX_KERNEL_MEMORY()->LookupHeap(base_address);
++    TracePhysicalMemory("get-physical-address", base_address, physical_address, 0,
++                        heap ? heap->heap_base() : 0, valid_physical_address);
++  }
+   REXKRNL_IMPORT_RESULT("MmGetPhysicalAddress", "addr={:#x} -> {:#x}", (uint32_t)base_address,
+                         physical_address);
+   return physical_address;
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..77e8d1a 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
++#include <rex/filesystem/devices/disc_image_device.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/null_device.h>
+ #include <rex/filesystem/vfs.h>
+@@ -304,11 +305,19 @@ bool Runtime::SetupVfs() {
+   }
+ 
+   // Mount game_data_root as \Device\Harddisk0\Partition1
+-  auto mount_path = "\\Device\\Harddisk0\\Partition1";
+-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
+-      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  // (or as the DVD drive \Device\Cdrom0 when it is an Xbox 360 disc image file).
++  const bool is_disc_image = std::filesystem::is_regular_file(abs_game_root);
++  auto mount_path = is_disc_image ? "\\Device\\Cdrom0" : "\\Device\\Harddisk0\\Partition1";
++  std::unique_ptr<rex::filesystem::Device> device;
++  if (is_disc_image) {
++    device = std::make_unique<rex::filesystem::DiscImageDevice>(mount_path, abs_game_root);
++  } else {
++    device = std::make_unique<rex::filesystem::HostPathDevice>(
++        mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  }
+   if (!device->Initialize()) {
+-    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
++    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize game data device for {}",
++                 abs_game_root.string());
+     return false;
+   }
+   if (!file_system_->RegisterDevice(std::move(device))) {
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..e588d4e 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -1592,7 +1592,14 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
+   uint32_t base_page_number = (base_address - heap_base_) >> page_size_shift_;
+   auto base_page_entry = page_table_[base_page_number];
+   if (base_page_entry.base_address != base_page_number) {
+-    REXSYS_ERROR("BaseHeap::Release failed because address is not a region start");
++    REXSYS_ERROR(
++            "BaseHeap::Release failed because address is not a region start: "
++            "address={:08X} heap_base={:08X} page_size={:X} page={:X} "
++            "region_base={:08X} region_size={:X} state={:X}",
++            base_address, heap_base_, uint32_t(1) << page_size_shift_, base_page_number,
++            heap_base_ + (uint32_t(base_page_entry.base_address) << page_size_shift_),
++            uint32_t(base_page_entry.region_page_count) << page_size_shift_,
++            uint32_t(base_page_entry.state));
+     return false;
+   }
+ 
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b94fe9e..4637af3 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -207,7 +207,9 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+     return false;
+   }
+-  if (!std::filesystem::is_directory(paths.game_data_root)) {
++  // game_data_root is either a folder of extracted files or an Xbox 360 disc image (.iso).
++  const bool game_data_is_image = std::filesystem::is_regular_file(paths.game_data_root);
++  if (!game_data_is_image && !std::filesystem::is_directory(paths.game_data_root)) {
+     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
+     REXLOG_ERROR("{}", msg);
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+@@ -263,7 +265,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+   OnLoadXexImage(xex_image);
+ 
+   // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs.
+-  {
++  // (A disc image is checked when it is mounted.)
++  if (!game_data_is_image) {
+     constexpr std::string_view kGameDevice = "game:\\";
+     constexpr std::string_view kDDevice = "d:\\";
+     std::string_view tail = xex_image;
+diff --git a/tests/ppc/asm/instr_vpkuhus.s b/tests/ppc/asm/instr_vpkuhus.s
+index 7b4c2a3..97fe881 100644
+--- a/tests/ppc/asm/instr_vpkuhus.s
++++ b/tests/ppc/asm/instr_vpkuhus.s
+@@ -9,3 +9,21 @@ test_vpkuhus_1:
+   #_ REGISTER_OUT v4 [00040104, 00050105, 00060106, 00070107]
+   # {0, 255, 1, 255, 2, 255, 3, 255, 4, 255, 5, 255, 6, 255, 7, 255}
+   #_ REGISTER_OUT v5 [00FF01FF, 02FF03FF, 04FF05FF, 06FF07FF]
++
++test_vpkuhus_2:
++  # destination aliases vA
++  #_ REGISTER_IN v3 [00000100, 00010101, 00020102, 00030103]
++  #_ REGISTER_IN v4 [00040104, 00050105, 00060106, 00070107]
++  vpkuhus v3, v3, v4
++  blr
++  #_ REGISTER_OUT v3 [00FF01FF, 02FF03FF, 04FF05FF, 06FF07FF]
++  #_ REGISTER_OUT v4 [00040104, 00050105, 00060106, 00070107]
++
++test_vpkuhus_3:
++  # destination aliases vB
++  #_ REGISTER_IN v3 [00000100, 00010101, 00020102, 00030103]
++  #_ REGISTER_IN v4 [00040104, 00050105, 00060106, 00070107]
++  vpkuhus v4, v3, v4
++  blr
++  #_ REGISTER_OUT v3 [00000100, 00010101, 00020102, 00030103]
++  #_ REGISTER_OUT v4 [00FF01FF, 02FF03FF, 04FF05FF, 06FF07FF]
+diff --git a/tests/ppc/asm/instr_vpkuwus.s b/tests/ppc/asm/instr_vpkuwus.s
+index 7f117c1..48dd32a 100644
+--- a/tests/ppc/asm/instr_vpkuwus.s
++++ b/tests/ppc/asm/instr_vpkuwus.s
+@@ -21,3 +21,24 @@ test_vpkuwus_2:
+   #_ REGISTER_OUT v4 [FFFFFFFF, 00010002, FFFFFFFE, 00000010]
+   # {65535, 65535, 2, 3, 65535, 65535, 65535, 16}
+   #_ REGISTER_OUT v5 [FFFFFFFF, 00020003, FFFFFFFF, FFFF0010]
++
++test_vpkuwus_3:
++  # destination aliases vA
++  # {1, 65536, 2, 65535}
++  #_ REGISTER_IN v3 [00000001, 00010000, 00000002, 0000FFFF]
++  # {3, 4, 131072, 5}
++  #_ REGISTER_IN v4 [00000003, 00000004, 00020000, 00000005]
++  vpkuwus v3, v3, v4
++  blr
++  # {1, 65535, 2, 65535, 3, 4, 65535, 5}
++  #_ REGISTER_OUT v3 [0001FFFF, 0002FFFF, 00030004, FFFF0005]
++  #_ REGISTER_OUT v4 [00000003, 00000004, 00020000, 00000005]
++
++test_vpkuwus_4:
++  # destination aliases vB
++  #_ REGISTER_IN v3 [00000001, 00010000, 00000002, 0000FFFF]
++  #_ REGISTER_IN v4 [00000003, 00000004, 00020000, 00000005]
++  vpkuwus v4, v3, v4
++  blr
++  #_ REGISTER_OUT v3 [00000001, 00010000, 00000002, 0000FFFF]
++  #_ REGISTER_OUT v4 [0001FFFF, 0002FFFF, 00030004, FFFF0005]
+diff --git a/src/audio/xma_context_master.cpp b/src/audio/xma_context_master.cpp
+new file mode 100644
+index 0000000..e859f9f
+--- /dev/null
++++ b/src/audio/xma_context_master.cpp
+@@ -0,0 +1,519 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2024 Ben Vanik. All rights reserved.                             *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ *
++ * The original ("master") Xenia XMA decoder, ported from xenia-canary's
++ * xma_context_master.cc. Selected with xma_decoder = "master".
++ *
++ * It decodes whole frames straight into the output ring buffer and, unlike the
++ * newer decoder, invalidates the output buffer as soon as a context runs out of
++ * input. Some games (Naruto: The Broken Bond) wait for exactly that before they
++ * consider a voice finished; with the newer decoder their cutscenes never
++ * advance past the first spoken line.
++ */
++
++#include <chrono>
++#include <cstring>
++#include <tuple>
++
++#include <rex/audio/xma/context.h>
++#include <rex/audio/xma/helpers.h>
++#include <rex/cvar.h>
++#include <rex/logging.h>
++#include <rex/memory/ring_buffer.h>
++#include <rex/stream.h>
++
++extern "C" {
++#include "libavcodec/avcodec.h"
++#include "libavutil/error.h"
++}  // extern "C"
++
++REXCVAR_DECLARE(std::string, xma_decoder);
++REXCVAR_DECLARE(bool, xma_trace);
++
++namespace rex::audio {
++
++using stream::BitStream;
++
++namespace {
++
++constexpr uint32_t kBytesPerPacket = XmaContext::kBytesPerPacket;
++constexpr uint32_t kBitsPerPacket = XmaContext::kBitsPerPacket;
++
++void MasterSwapInputBuffer(XMA_CONTEXT_DATA* data) {
++  if (data->current_buffer == 0) {
++    data->input_buffer_0_valid = 0;
++  } else {
++    data->input_buffer_1_valid = 0;
++  }
++  data->current_buffer ^= 1;
++  data->input_buffer_read_offset = 0;
++}
++
++// buffer_bits: size of the current input buffer. A streamed sound can loop over a region that
++// spans many buffers (loop_end lies beyond this one); then the buffer must be consumed instead of
++// replayed, or the stream never advances (fight loading screens hang on their music).
++bool TrySetupNextLoop(XMA_CONTEXT_DATA* data, bool ignore_input_buffer_offset, size_t buffer_bits) {
++  if (data->loop_end > buffer_bits) {
++    return false;
++  }
++  if (data->loop_count > 0 && data->loop_start < data->loop_end &&
++      (ignore_input_buffer_offset || data->input_buffer_read_offset >= data->loop_end)) {
++    data->input_buffer_read_offset = data->loop_start;
++    if (data->loop_count < 255) {
++      data->loop_count--;
++    }
++    return true;
++  }
++  return false;
++}
++
++int GetFramePacketNumber(uint8_t* block, size_t size, size_t bit_offset) {
++  size *= 8;
++  if (bit_offset >= size) {
++    return -1;
++  }
++  return static_cast<int>((bit_offset >> 3) / kBytesPerPacket);
++}
++
++bool ValidFrameOffset(uint8_t* block, size_t size_bytes, size_t frame_offset_bits) {
++  const int packet_num = GetFramePacketNumber(block, size_bytes, frame_offset_bits);
++  if (packet_num == -1) {
++    return false;
++  }
++  uint8_t* packet = block + (packet_num * kBytesPerPacket);
++  const size_t relative_offset_bits = frame_offset_bits % kBitsPerPacket;
++
++  const uint32_t first_frame_offset = xma::GetPacketFrameOffset(packet);
++  if (first_frame_offset == static_cast<uint32_t>(-1) || first_frame_offset > kBitsPerPacket) {
++    return false;
++  }
++
++  BitStream stream(packet, kBitsPerPacket);
++  stream.SetOffset(first_frame_offset);
++  while (true) {
++    if (stream.offset_bits() == relative_offset_bits) {
++      return true;
++    }
++    if (stream.BitsRemaining() < 15) {
++      return false;
++    }
++    const uint64_t size = stream.Read(15);
++    if ((size - 15) > stream.BitsRemaining()) {
++      return false;
++    } else if (size == 0x7FFF) {
++      return false;
++    }
++    stream.Advance(size - 16);
++    if (stream.Read(1) == 0) {
++      break;
++    }
++  }
++  return false;
++}
++
++size_t GetNextFrame(uint8_t* block, size_t size, size_t bit_offset) {
++  const int packet_idx = GetFramePacketNumber(block, size, bit_offset);
++
++  BitStream stream(block, size * 8);
++  stream.SetOffset(bit_offset);
++  if (stream.BitsRemaining() < 15) {
++    return 0;
++  }
++  const uint64_t len = stream.Read(15);
++  if ((len - 15) > stream.BitsRemaining()) {
++    return 0;
++  } else if (len >= xma::kMaxFrameLength) {
++    return 0;
++  }
++  stream.Advance(len - (15 + 1));
++  if (stream.Read(1) == 0) {
++    return 0;
++  }
++  bit_offset += len;
++  if (packet_idx < GetFramePacketNumber(block, size, bit_offset)) {
++    return 0;
++  }
++  return bit_offset;
++}
++
++std::tuple<int, int> GetFrameNumber(uint8_t* block, size_t size, size_t bit_offset) {
++  const int packet_idx = GetFramePacketNumber(block, size, bit_offset);
++  if (packet_idx < 0 || (packet_idx + 1) * kBytesPerPacket > size) {
++    return {packet_idx, -2};
++  }
++  if (bit_offset == 0) {
++    return {packet_idx, -1};
++  }
++
++  uint8_t* packet = block + (packet_idx * kBytesPerPacket);
++  const auto first_frame_offset = xma::GetPacketFrameOffset(packet);
++  BitStream stream(block, size * 8);
++  stream.SetOffset(packet_idx * kBitsPerPacket + first_frame_offset);
++
++  int frame_idx = 0;
++  while (true) {
++    if (stream.BitsRemaining() < 15) {
++      break;
++    }
++    if (stream.offset_bits() == bit_offset) {
++      break;
++    }
++    const uint64_t frame_size = stream.Read(15);
++    if ((frame_size - 15) > stream.BitsRemaining()) {
++      break;
++    } else if (frame_size == 0x7FFF) {
++      break;
++    }
++    stream.Advance(frame_size - (15 + 1));
++    if (stream.Read(1) == 0) {
++      break;
++    }
++    frame_idx++;
++  }
++  return {packet_idx, frame_idx};
++}
++
++std::tuple<int, bool> GetPacketFrameCount(uint8_t* packet) {
++  const auto first_frame_offset = xma::GetPacketFrameOffset(packet);
++  if (first_frame_offset > kBitsPerPacket - 33) {
++    return {0, false};
++  }
++
++  BitStream stream(packet, kBitsPerPacket);
++  stream.SetOffset(first_frame_offset);
++  int frame_count = 0;
++  while (true) {
++    frame_count++;
++    if (stream.BitsRemaining() < 15) {
++      return {frame_count, true};
++    }
++    const uint64_t size = stream.Read(15);
++    if ((size - 15) > stream.BitsRemaining()) {
++      return {frame_count, true};
++    } else if (size == 0x7FFF) {
++      return {frame_count, true};
++    }
++    stream.Advance(size - (15 + 1));
++    if (stream.Read(1) == 0) {
++      return {frame_count, false};
++    }
++  }
++}
++
++}  // namespace
++
++bool XmaContext::UseMasterDecoder() {
++  return REXCVAR_GET(xma_decoder) == "master";
++}
++
++bool XmaContext::WorkMaster() {
++  std::lock_guard<std::mutex> lock(lock_);
++  if (!is_allocated() || !is_enabled()) {
++    return false;
++  }
++  set_is_enabled(false);
++
++  auto context_ptr = memory()->TranslateVirtual(guest_ptr());
++  XMA_CONTEXT_DATA data(context_ptr);
++  if (REXCVAR_GET(xma_trace)) {
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last_trace_time_ >= std::chrono::seconds(2)) {
++      last_trace_time_ = now;
++      REXAPU_INFO(
++          "xma_trace: master ctx {} in0={}({}) in1={}({}) cur={} read={} out_valid={} out r/w={}/{} "
++          "of {} loop={} [{}..{}] skip={} split={}/{}",
++          id(), uint32_t(data.input_buffer_0_valid), uint32_t(data.input_buffer_0_packet_count),
++          uint32_t(data.input_buffer_1_valid), uint32_t(data.input_buffer_1_packet_count),
++          uint32_t(data.current_buffer), uint32_t(data.input_buffer_read_offset),
++          uint32_t(data.output_buffer_valid), uint32_t(data.output_buffer_read_offset),
++          uint32_t(data.output_buffer_write_offset), uint32_t(data.output_buffer_block_count),
++          uint32_t(data.loop_count), uint32_t(data.loop_start), uint32_t(data.loop_end),
++          master_packets_skip_, master_split_frame_len_, master_split_frame_len_partial_);
++    }
++  }
++  DecodeMaster(&data);
++  data.Store(context_ptr);
++  return true;
++}
++
++void XmaContext::ClearMaster() {
++  std::lock_guard<std::mutex> lock(lock_);
++  auto context_ptr = memory()->TranslateVirtual(guest_ptr());
++  XMA_CONTEXT_DATA data(context_ptr);
++
++  data.input_buffer_0_valid = 0;
++  data.input_buffer_1_valid = 0;
++  data.output_buffer_valid = 0;
++  data.output_buffer_read_offset = 0;
++  data.output_buffer_write_offset = 0;
++  master_packets_skip_ = 0;
++  master_split_frame_len_ = 0;
++  master_split_frame_len_partial_ = 0;
++  master_split_frame_padding_start_ = 0;
++
++  data.Store(context_ptr);
++}
++
++void XmaContext::DecodeMaster(XMA_CONTEXT_DATA* data) {
++  if (!data->output_buffer_valid) {
++    return;
++  }
++
++  // No available data.
++  if (!data->input_buffer_0_valid && !data->input_buffer_1_valid) {
++    data->output_buffer_valid = 0;
++    return;
++  }
++
++  // Games may use rolling input buffers that are not contiguous.
++  uint8_t* in0 = data->input_buffer_0_valid ? memory()->TranslatePhysical(data->input_buffer_0_ptr)
++                                            : nullptr;
++  uint8_t* in1 = data->input_buffer_1_valid ? memory()->TranslatePhysical(data->input_buffer_1_ptr)
++                                            : nullptr;
++  uint8_t* current_input_buffer = data->current_buffer ? in1 : in0;
++  if (!current_input_buffer) {
++    // The current buffer was consumed; continue in the other one.
++    MasterSwapInputBuffer(data);
++    return;
++  }
++
++  const size_t input_buffer_0_size = data->input_buffer_0_packet_count * kBytesPerPacket;
++  const size_t input_buffer_1_size = data->input_buffer_1_packet_count * kBytesPerPacket;
++  const size_t current_input_size = data->current_buffer ? input_buffer_1_size : input_buffer_0_size;
++  const size_t current_input_packet_count = current_input_size / kBytesPerPacket;
++
++  // Output buffers hold raw PCM, 256 bytes per block, as a ring buffer.
++  uint8_t* output_buffer = memory()->TranslatePhysical(data->output_buffer_ptr);
++  const uint32_t output_capacity = data->output_buffer_block_count * kBytesPerSubframeChannel;
++  const uint32_t output_read_offset = data->output_buffer_read_offset * kBytesPerSubframeChannel;
++  const uint32_t output_write_offset = data->output_buffer_write_offset * kBytesPerSubframeChannel;
++
++  memory::RingBuffer output_rb(output_buffer, output_capacity);
++  output_rb.set_read_offset(output_read_offset);
++  output_rb.set_write_offset(output_write_offset);
++
++  // Only whole frames are written.
++  size_t output_remaining_bytes = output_rb.write_count();
++  output_remaining_bytes -= output_remaining_bytes % (kBytesPerFrameChannel << data->is_stereo);
++
++  bool reuse_input_buffer = false;
++  while (output_remaining_bytes > 0) {
++    if (!data->input_buffer_0_valid && !data->input_buffer_1_valid) {
++      break;
++    }
++
++    // The input buffer must not be swapped out until all loops are processed.
++    reuse_input_buffer = TrySetupNextLoop(data, false, current_input_size * 8);
++
++    int packet_idx, frame_idx, frame_count;
++    uint8_t* packet;
++    bool frame_last_split;
++
++    BitStream stream(current_input_buffer, current_input_size * 8);
++    stream.SetOffset(data->input_buffer_read_offset);
++
++    // After a buffer swap, skip packets first.
++    if (master_packets_skip_ > 0) {
++      packet_idx = GetFramePacketNumber(current_input_buffer, current_input_size,
++                                        data->input_buffer_read_offset);
++      while (master_packets_skip_ > 0) {
++        master_packets_skip_--;
++        packet_idx++;
++        if (packet_idx >= static_cast<int>(current_input_packet_count)) {
++          if (!reuse_input_buffer) {
++            reuse_input_buffer = TrySetupNextLoop(data, true, current_input_size * 8);
++          }
++          if (!reuse_input_buffer) {
++            MasterSwapInputBuffer(data);
++          }
++          return;
++        }
++      }
++      data->input_buffer_read_offset = packet_idx * kBitsPerPacket;
++    }
++
++    if (master_split_frame_len_) {
++      // Finish a frame that was split over two packets.
++      packet_idx = GetFramePacketNumber(current_input_buffer, current_input_size,
++                                        data->input_buffer_read_offset);
++      if (packet_idx < 0) {
++        MasterSwapInputBuffer(data);
++        return;
++      }
++      packet = current_input_buffer + packet_idx * kBytesPerPacket;
++      std::tie(frame_count, frame_last_split) = GetPacketFrameCount(packet);
++      frame_idx = -1;
++
++      stream = BitStream(current_input_buffer, (packet_idx + 1) * kBitsPerPacket);
++      stream.SetOffset(packet_idx * kBitsPerPacket + 32);
++
++      if (master_split_frame_len_ > xma::kMaxFrameLength) {
++        const auto offset = stream.offset_bits();
++        stream.Copy(xma_frame_.data() + 1 +
++                        ((master_split_frame_len_partial_ + master_split_frame_padding_start_) / 8),
++                    15 - master_split_frame_len_partial_);
++        stream.SetOffset(offset);
++        BitStream slen(xma_frame_.data() + 1, 15 + master_split_frame_padding_start_);
++        slen.Advance(master_split_frame_padding_start_);
++        master_split_frame_len_ = static_cast<uint32_t>(slen.Read(15));
++      }
++
++      stream.Copy(xma_frame_.data() + 1 +
++                      ((master_split_frame_len_partial_ + master_split_frame_padding_start_) / 8),
++                  master_split_frame_len_ - master_split_frame_len_partial_);
++    } else {
++      if (data->input_buffer_read_offset % kBitsPerPacket == 0) {
++        // Not a frame offset yet: move to the first frame of the packet.
++        const int packet_number = GetFramePacketNumber(current_input_buffer, current_input_size,
++                                                       data->input_buffer_read_offset);
++        if (packet_number == -1) {
++          return;
++        }
++        const uint32_t first = xma::GetPacketFrameOffset(current_input_buffer +
++                                                         kBytesPerPacket * packet_number);
++        if (first == static_cast<uint32_t>(-1)) {
++          MasterSwapInputBuffer(data);
++          return;
++        }
++        data->input_buffer_read_offset = first + data->input_buffer_read_offset;
++      }
++
++      if (!ValidFrameOffset(current_input_buffer, current_input_size,
++                            data->input_buffer_read_offset)) {
++        MasterSwapInputBuffer(data);
++        return;
++      }
++
++      std::tie(packet_idx, frame_idx) =
++          GetFrameNumber(current_input_buffer, current_input_size, data->input_buffer_read_offset);
++      if (packet_idx < 0 || frame_idx < 0) {
++        MasterSwapInputBuffer(data);
++        return;
++      }
++      packet = current_input_buffer + packet_idx * kBytesPerPacket;
++      std::tie(frame_count, frame_last_split) = GetPacketFrameCount(packet);
++
++      PrepareDecoder(data->sample_rate, bool(data->is_stereo));
++
++      const bool frame_is_split = frame_last_split && (frame_idx >= frame_count - 1);
++
++      stream = BitStream(current_input_buffer, (packet_idx + 1) * kBitsPerPacket);
++      stream.SetOffset(data->input_buffer_read_offset);
++      master_split_frame_len_partial_ = static_cast<uint32_t>(stream.BitsRemaining());
++      if (master_split_frame_len_partial_ >= 15) {
++        master_split_frame_len_ = static_cast<uint32_t>(stream.Peek(15));
++      } else {
++        master_split_frame_len_ = xma::kMaxFrameLength + 1;
++      }
++
++      std::memset(xma_frame_.data(), 0, xma_frame_.size());
++      {
++        const auto offset = stream.Copy(
++            xma_frame_.data() + 1, std::min(master_split_frame_len_, master_split_frame_len_partial_));
++        master_split_frame_padding_start_ = static_cast<uint8_t>(offset);
++      }
++
++      if (frame_is_split) {
++        // Continue in the next packet of this stream.
++        master_packets_skip_ = xma::GetPacketSkipCount(packet) + 1;
++        while (master_packets_skip_ > 0) {
++          master_packets_skip_--;
++          packet += kBytesPerPacket;
++          packet_idx++;
++          if (packet_idx >= static_cast<int>(current_input_packet_count)) {
++            if (!reuse_input_buffer) {
++              reuse_input_buffer = TrySetupNextLoop(data, true, current_input_size * 8);
++            }
++            if (!reuse_input_buffer) {
++              MasterSwapInputBuffer(data);
++            }
++            return;
++          }
++        }
++        data->input_buffer_read_offset = packet_idx * kBitsPerPacket;
++        continue;
++      }
++    }
++
++    // Also needed for frames finished after a split: a released context has its codec settings
++    // cleared, and decoding without reopening it fails every frame.
++    if (PrepareDecoder(data->sample_rate, bool(data->is_stereo)) < 0) {
++      return;
++    }
++    PreparePacket(master_split_frame_len_, master_split_frame_padding_start_);
++    master_split_frame_len_ = 0;
++    master_split_frame_len_partial_ = 0;
++    master_split_frame_padding_start_ = 0;
++
++    auto ret = avcodec_send_packet(av_context_, av_packet_);
++    if (ret < 0) {
++      REXAPU_ERROR("XmaContext {}: Error sending packet for decoding", id());
++    }
++    ret = avcodec_receive_frame(av_context_, av_frame_);
++    if (ret == AVERROR(EAGAIN)) {
++      return;
++    }
++    if (ret < 0) {
++      char errbuf[AV_ERROR_MAX_STRING_SIZE];
++      av_strerror(ret, errbuf, sizeof(errbuf));
++      REXAPU_ERROR("XmaContext {}: Error during decoding: {} ({})", id(), errbuf, ret);
++      return;
++    }
++
++    ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
++                 raw_frame_.data());
++
++    const auto byte_count = kBytesPerFrameChannel << data->is_stereo;
++    output_rb.Write(raw_frame_.data(), byte_count);
++    output_remaining_bytes -= byte_count;
++    data->output_buffer_write_offset = output_rb.write_offset() / 256;
++
++    uint32_t offset = data->input_buffer_read_offset;
++    offset = static_cast<uint32_t>(GetNextFrame(current_input_buffer, current_input_size, offset));
++    if (frame_idx + 1 >= frame_count) {
++      // Skip to the next packet (no split frame).
++      master_packets_skip_ = xma::GetPacketSkipCount(packet) + 1;
++      while (master_packets_skip_ > 0) {
++        master_packets_skip_--;
++        packet_idx++;
++        if (packet_idx >= static_cast<int>(current_input_packet_count)) {
++          if (!reuse_input_buffer) {
++            reuse_input_buffer = TrySetupNextLoop(data, true, current_input_size * 8);
++          }
++          if (!reuse_input_buffer) {
++            MasterSwapInputBuffer(data);
++          }
++          return;
++        }
++      }
++      packet = current_input_buffer + packet_idx * kBytesPerPacket;
++      offset = xma::GetPacketFrameOffset(packet) + packet_idx * kBitsPerPacket;
++    }
++    if (offset == 0 || frame_idx == -1) {
++      if (packet_idx >= static_cast<int>(current_input_packet_count)) {
++        if (!reuse_input_buffer) {
++          reuse_input_buffer = TrySetupNextLoop(data, true, current_input_size * 8);
++        }
++        if (!reuse_input_buffer) {
++          MasterSwapInputBuffer(data);
++        }
++        break;
++      }
++      offset = xma::GetPacketFrameOffset(packet) + packet_idx * kBitsPerPacket;
++    }
++    data->input_buffer_read_offset = offset;
++  }
++
++  // The game kicks the context again with a new output buffer later. Only
++  // invalidate it when nothing is left to read.
++  if (output_rb.write_offset() == output_rb.read_offset()) {
++    data->output_buffer_valid = 0;
++  }
++}
++
++}  // namespace rex::audio
