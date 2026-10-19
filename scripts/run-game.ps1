@@ -20,7 +20,8 @@ if (-not (Test-Path -LiteralPath $executable)) {
 }
 if (-not (Test-Path -LiteralPath (Join-Path $gameRoot 'default.xex'))) { throw 'Extract the game with scripts/extract-game.ps1 first.' }
 New-Item -ItemType Directory -Force $userRoot, $logRoot | Out-Null
-$logFile = Join-Path $logRoot ("runtime-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$runName = "runtime-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss')
+$logFile = Join-Path $logRoot "$runName.log"
 Write-Host "Runtime log: $logFile"
 $launchArguments = @(
     '--game_data_root', ('"{0}"' -f $gameRoot),
@@ -30,10 +31,23 @@ $launchArguments = @(
     '--log_level', $LogLevel
 )
 if ($Keyboard) { $launchArguments += '--mnk_mode' }
+$previousFrameDirectory = $env:REX_NATIVE_FRAME_DIR
 if ($Renderer -eq 'native') {
     $journal = [IO.Path]::ChangeExtension($logFile, '.native.jsonl')
     Write-Host "Native renderer journal: $journal"
     $launchArguments += @('--renderer', 'native', '--native_renderer_bootstrap_path', ('"{0}"' -f $journal))
+    # Every native run leaves the pipelines it created (pipelines.json at the
+    # close) for scripts/update-pipeline-cache.ps1, unless a frame directory
+    # was already chosen.
+    if (-not $env:REX_NATIVE_FRAME_DIR) {
+        $env:REX_NATIVE_FRAME_DIR = Join-Path $projectRoot "build/pipeline-runs/$runName"
+        New-Item -ItemType Directory -Force $env:REX_NATIVE_FRAME_DIR | Out-Null
+    }
+    Write-Host "Native renderer frame directory: $env:REX_NATIVE_FRAME_DIR"
 }
-$process = Start-Process -FilePath $executable -ArgumentList $launchArguments -WorkingDirectory $projectRoot -PassThru -Wait
+try {
+    $process = Start-Process -FilePath $executable -ArgumentList $launchArguments -WorkingDirectory $projectRoot -PassThru -Wait
+} finally {
+    $env:REX_NATIVE_FRAME_DIR = $previousFrameDirectory
+}
 if ($process.ExitCode -ne 0) { throw "Game exited with code $($process.ExitCode). See $logFile" }
