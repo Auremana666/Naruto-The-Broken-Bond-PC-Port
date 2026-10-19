@@ -226,15 +226,15 @@ uint32_t ForcedSwapInterval() {
     const int n = text ? std::atoi(text) : 0;
     return n >= 1 && n <= 4 ? uint32_t(n) : 0u;
   }();
-  // unlock_fps is not ported: the Rise version rewrote Rise's fixed engine
-  // step, which Broken Bond's engine timing does not share. Only the
-  // diagnostic interval is forced, and it changes the game speed.
+  // The engine's fixed step (82BC8FA8, +76) stays the title's, so a forced
+  // interval changes the game speed; frame rates above the title's come from
+  // the state interpolation mode (tick.h).
   return environment;
 }
 void PaceSwap(PPCContext& ctx, uint8_t* base, uint32_t dev) {
   profile::Timer pace_time(profile::kSwapPace);
   auto& l = swap_limiter;
-  // unlock_fps (or REX_NATIVE_SWAP_INTERVAL=<1..4>)
+  // A forced interval (ForcedSwapInterval: REX_NATIVE_SWAP_INTERVAL=<1..4>)
   // paces the own Swap at that interval instead of the title's +13596, which
   // stays untouched (the title keeps requesting 2 in the menus and the open
   // world, 1 in the fight). The state interpolation mode (tick.h) paces at its

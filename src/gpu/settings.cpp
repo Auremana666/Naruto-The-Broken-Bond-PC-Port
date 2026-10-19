@@ -43,10 +43,13 @@ REXCVAR_DEFINE_INT32(msaa_samples, 0, "broken_bond/Graphics",
 REXCVAR_DEFINE_BOOL(transparency_antialiasing, false, "broken_bond/Graphics",
                     "Alpha to coverage instead of the alpha test in the native renderer's multisampled targets")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-// Kept for the shared option record; not supported in Broken Bond. The Rise
-// option rewrote Rise's fixed engine step (see d3d/frame.cpp).
-REXCVAR_DEFINE_BOOL(unlock_fps, false, "broken_bond/Graphics",
-                    "Not supported in Broken Bond (ignored by the native renderer)")
+// The frame rate of the native renderer: above 30, the state interpolation
+// (gpu/interpolation/tick.h) keeps the game's logic at its own step and draws
+// the frames between the steps. 30 keeps the game's frame rate.
+REXCVAR_DEFINE_INT32(frame_rate, 30, "broken_bond/Graphics",
+                     "Frame rate of the native renderer: 30 keeps the game's; 31 to 240 interpolate the frames "
+                     "between the game's logic steps")
+    .range(30, 240)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(internal_resolution_scale, 0.0, "broken_bond/Graphics",
                       "Internal resolution scale of the native renderer, 1 to 4 with fractions "
@@ -131,7 +134,7 @@ rex::cvar::FlagEntry StringOption(const char* name, std::string& value, std::vec
 constexpr std::string_view kOptions[] = {
     "vsync", "anisotropic_override", "swap_post_effect", "resolution_scale", "draw_resolution_scale_x",
     "draw_resolution_scale_y", "max_frame_latency", "triple_buffering", "brightness", "internal_resolution_scale",
-    "msaa_samples", "transparency_antialiasing", "unlock_fps", "graphics_device",
+    "msaa_samples", "transparency_antialiasing", "frame_rate", "graphics_device",
     "d3d12_allow_variable_refresh_rate_and_tearing", "present_effect", "present_cas_additional_sharpness",
     "present_fsr_sharpness_reduction", "present_fsr_max_upsampling_passes"};
 
@@ -234,7 +237,7 @@ void LoadSettings() {
   const int32_t msaa = REXCVAR_GET(msaa_samples);
   s.msaa_samples = msaa >= 8 ? 8 : msaa >= 4 ? 4 : msaa >= 2 ? 2 : 0;
   s.transparency_antialiasing = REXCVAR_GET(transparency_antialiasing);
-  s.unlock_fps = REXCVAR_GET(unlock_fps);
+  s.frame_rate = uint32_t(std::clamp(REXCVAR_GET(frame_rate), 30, 240));
   s.graphics_device = REXCVAR_GET(graphics_device);
   if (rex::cvar::GetFlagInfo("d3d12_allow_variable_refresh_rate_and_tearing"))
     s.allow_tearing = rex::cvar::Query<bool>("d3d12_allow_variable_refresh_rate_and_tearing");
@@ -256,11 +259,11 @@ void LoadSettings() {
       "\"present_effect_requested\":{},\"cas_additional_sharpness\":{},\"fsr_sharpness_reduction\":{},"
       "\"swap_post_effect\":\"{}\",\"resolution_scale\":[{},{}],\"max_frame_latency\":{},\"triple_buffering\":{},"
       "\"brightness\":{},\"fsr_max_passes\":{},\"msaa_samples\":{},\"transparency_antialiasing\":{},"
-      "\"unlock_fps\":{},\"graphics_device\":{},\"sources\":{{{}}}",
+      "\"frame_rate\":{},\"graphics_device\":{},\"sources\":{{{}}}",
       s.vsync, s.allow_tearing, s.anisotropic_override, Name(s.present_effect), Quoted(requested),
       s.cas_additional_sharpness, s.fsr_sharpness_reduction, Name(s.swap_post_effect), s.resolution_scale.x,
       s.resolution_scale.y, s.max_frame_latency, s.triple_buffering, s.brightness, s.fsr_max_passes, s.msaa_samples,
-      s.transparency_antialiasing, s.unlock_fps, Quoted(s.graphics_device), sources);
+      s.transparency_antialiasing, s.frame_rate, Quoted(s.graphics_device), sources);
 }
 const Settings& CurrentSettings() { return settings; }
 std::string SettingsEvidence() { return evidence; }

@@ -32,7 +32,7 @@
 // only turned a written matrix, the tick's scale and position go back under
 // the turn, and a frame without a tick writes the interpolated value under it
 // again. REX_NATIVE_INTERPOLATION_TURNED=0 leaves them as the view block left
-// them; F7 switches it at run time.
+// them; with the mode set by the variable (tick.h), F7 switches it at run time.
 //
 // Rows of the rotation are interpolated linearly and keep the interpolated
 // length; the position linearly. Cuts, without interpolation until the next
@@ -51,7 +51,8 @@
 // alpha, tracked by address with the same cuts as the objects, and come back
 // right after it.
 //
-// On with the gate of tick.h (REX_NATIVE_STATE_INTERPOLATION=1);
+// On with the gate of tick.h (frame_rate above 30, or
+// REX_NATIVE_STATE_INTERPOLATION=1);
 // REX_NATIVE_INTERPOLATION_TRANSFORMS=0 leaves the frames between the ticks
 // as the last tick (the gate alone); REX_NATIVE_INTERPOLATION_BONES=0 leaves
 // the poses at the last tick. Every 300 view blocks of the gate the counts

@@ -23,12 +23,14 @@
 // over them (later). Without the fixed step, or when the period is not longer
 // than the frame (1/60 s at 60), every iteration is a tick.
 //
-// REX_NATIVE_STATE_INTERPOLATION=1 turns the mode on, with REX_NATIVE_FRAME_RATE
-// for the rate (30 to 240, 60 when unset). The own limiter then paces at the
-// rate (PaceRate: the tick rate when the gate is off under the fixed step) and
-// the time step stays the title's. F8 switches the mode off and on at run time
-// (off, the game runs as without the mode: the title's interval and step) and
-// the window title shows it. Mode changes and every 300th iteration are
+// The option frame_rate above 30 (settings.h) turns the mode on at that rate;
+// for the boots, REX_NATIVE_STATE_INTERPOLATION (1 on, 0 off) wins over it,
+// with REX_NATIVE_FRAME_RATE for the rate (60 when neither gives one). The own
+// limiter then paces at the rate (PaceRate: the tick rate when the gate is off
+// under the fixed step) and the time step stays the title's. With the mode set
+// by the variable, F8 switches it off and on at run time (off, the game runs
+// as without the mode: the title's interval and step) and the window title
+// shows it. Mode changes and every 300th iteration are
 // recorded as native-d3d-tick. In the native mode, each change of the step,
 // its flag or the title's interval is recorded as native-d3d-time-step, with
 // the mode on or off. Main thread.
@@ -47,11 +49,12 @@
 #include <cstdint>
 
 namespace gpu::tick {
-// The mode is on (REX_NATIVE_STATE_INTERPOLATION=1), whatever F8 says.
+// The mode is on (frame_rate above 30, or REX_NATIVE_STATE_INTERPOLATION=1),
+// whatever F8 says.
 bool Enabled();
 // On and not switched off by F8: the limiter paces at the frame rate.
 bool Owning();
-// REX_NATIVE_FRAME_RATE (30 to 240), else 60.
+// REX_NATIVE_FRAME_RATE (30 to 240), else frame_rate above 30, else 60.
 uint32_t FrameRate();
 // The rate the limiter paces at while Owning(), any thread: FrameRate() when
 // the gate decides or the engine measures its dt; the tick rate (1 / +76)
@@ -72,7 +75,10 @@ struct Frame {
 const Frame& Current();
 // Inside the main step of an iteration the gate decides.
 bool InGatedStep();
-// The label of the window title; empty when the mode is off.
+// The mode comes from REX_NATIVE_STATE_INTERPOLATION: the keys of the
+// comparisons (F8 here, F7 in transforms.h) act.
+bool ByVariable();
+// The label of the window title; empty when the mode is off or set by the option.
 const char* Label();
 // The view start (827F6F38) and the delivery's end (82BBADE0) of the main
 // step, main thread: the engine's dt of the view block (above).

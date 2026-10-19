@@ -39,9 +39,9 @@ struct Settings {
   // Own option: alpha-tested
   // draws into multisampled targets use alpha to coverage instead.
   bool transparency_antialiasing = false;  // transparency_antialiasing
-  // Rise of a Ninja option, not supported in Broken Bond: read and recorded
-  // only, never applied (d3d/frame.cpp).
-  bool unlock_fps = false;            // unlock_fps
+  // Own option: above 30, the
+  // state interpolation (gpu/interpolation/tick.h) at that frame rate.
+  uint32_t frame_rate = 30;           // frame_rate: 30 (the game's) to 240
   // The native renderer's adapter (settings.cpp defines the option): the adapter by
   // its name; empty keeps the one with the most dedicated video memory.
   std::string graphics_device;        // graphics_device

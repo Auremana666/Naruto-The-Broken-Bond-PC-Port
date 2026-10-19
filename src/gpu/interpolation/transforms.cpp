@@ -249,7 +249,7 @@ bool BonesEnabled() {
 
 // The matrices the display turns in place (transforms.h):
 // REX_NATIVE_INTERPOLATION_TURNED=0 leaves them as the view block left them;
-// F7 switches it at run time.
+// with the mode set by the variable, F7 switches it at run time.
 bool TurnedEnabled() {
   if (turned_enabled < 0) {
     const char* text = std::getenv("REX_NATIVE_INTERPOLATION_TURNED");
@@ -260,7 +260,7 @@ bool TurnedEnabled() {
 bool f7_down = false;
 bool turned_switched = false;  // F7 pressed since the last record.
 void SwitchTurned() {
-  const bool down = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
+  const bool down = tick::ByVariable() && (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
   if (down && !f7_down) {
     turned_enabled = TurnedEnabled() ? 0 : 1;
     turned_switched = true;
