@@ -39,6 +39,7 @@
 #include "gpu/diagnostics/frame_trace.h"
 #include "gpu/diagnostics/start_evidence.h"
 #include "gpu/diagnostics/frame_capture.h"
+#include "gpu/interpolation/tick.h"
 #include "gpu/diagnostics/measure.h"
 #include "gpu/diagnostics/frame_state.h"
 #include "gpu/diagnostics/sampler.h"
@@ -140,20 +141,22 @@ uint32_t CallImport(PPCContext& ctx, uint8_t* base, GuestFunction fn, uint32_t s
 uint64_t dropped_sync_interrupts = 0;  // Render thread only.
 // The limiter of the own Swap. The period is the title's presentation interval
 // (+13596, in vblanks of 60 Hz); a Swap that arrives after its deadline starts
-// a new phase instead of catching up in a burst. The wait is a high-resolution
-// waitable timer up to about 1 ms before the deadline, then a spin on the QPC.
+// a new phase instead of catching up in a burst. With the state interpolation
+// mode (interpolation/tick.h) the period is 1/rate s instead. The wait is a
+// high-resolution waitable timer up to about 1 ms before the deadline, then a
+// spin on the QPC.
 // Render thread only.
 struct SwapLimiter {
   HANDLE timer = nullptr;
   int64_t frequency = 0, next = 0;
-  uint32_t interval = 0;
+  uint32_t interval = 0, rate = 0;  // rate: the frame rate of the state interpolation mode, else 0.
   uint64_t paced = 0, waited = 0, late = 0, max_late_us = 0, timer_failures = 0;
 } swap_limiter;
 std::string LimiterSummary() {
   const auto& l = swap_limiter;
-  return fmt::format("{{\"interval\":{},\"paced\":{},\"waited\":{},\"late\":{},\"max_late_us\":{},"
-                     "\"timer_failures\":{},\"period\":\"interval/60 s\"}}", l.interval, l.paced, l.waited, l.late,
-                     l.max_late_us, l.timer_failures);
+  return fmt::format("{{\"interval\":{},\"rate\":{},\"paced\":{},\"waited\":{},\"late\":{},\"max_late_us\":{},"
+                     "\"timer_failures\":{},\"period\":\"{}\"}}", l.interval, l.rate, l.paced, l.waited, l.late,
+                     l.max_late_us, l.timer_failures, l.rate ? "1/rate s" : "interval/60 s");
 }
 // Frame-time meter in the window title: fps, mean
 // and max frame time of the last half second, measured between the ends of
@@ -196,7 +199,8 @@ void MeterSwap() {
   auto* runtime = rex::Runtime::instance();
   auto* app = runtime ? runtime->app_context() : nullptr;
   if (!hwnd || !app) return;
-  app->CallInUIThreadDeferred([hwnd, fps, mean_ms, max_ms] {
+  const std::string mode = gpu::tick::Label();  // REX_NATIVE_STATE_INTERPOLATION.
+  app->CallInUIThreadDeferred([hwnd, fps, mean_ms, max_ms, mode] {
     static std::wstring base_title;  // UI thread only.
     static bool title_read = false;
     if (!title_read) {
@@ -207,6 +211,10 @@ void MeterSwap() {
     }
     wchar_t text[400]{};
     swprintf_s(text, L"%s | %.1f fps | %.1f ms (max %.1f)", base_title.c_str(), fps, mean_ms, max_ms);
+    if (!mode.empty()) {
+      wcscat_s(text, L" | ");
+      wcscat_s(text, std::wstring(mode.begin(), mode.end()).c_str());
+    }
     SetWindowTextW(hwnd, text);
   });
 }
@@ -229,10 +237,13 @@ void PaceSwap(PPCContext& ctx, uint8_t* base, uint32_t dev) {
   // unlock_fps (or REX_NATIVE_SWAP_INTERVAL=<1..4>)
   // paces the own Swap at that interval instead of the title's +13596, which
   // stays untouched (the title keeps requesting 2 in the menus and the open
-  // world, 1 in the fight).
+  // world, 1 in the fight). The state interpolation mode (tick.h) paces at its
+  // frame rate instead, or at the tick rate when its gate is off under the
+  // fixed step (PaceRate).
   const uint32_t forced_interval = ForcedSwapInterval();
+  const uint32_t rate = tick::Owning() ? tick::PaceRate() : 0u;
   uint32_t interval = forced_interval ? forced_interval : Get32(base, dev + 13596);
-  if (interval < 1 || interval > 4) {  // Clamped to the covered range.
+  if (!rate && (interval < 1 || interval > 4)) {  // Clamped to the covered range.
     UncoveredOperation(ctx, fmt::format("Swap-presentation-interval-uncovered-{}", interval));
     interval = std::clamp(interval, 1u, 4u);
   }
@@ -243,9 +254,10 @@ void PaceSwap(PPCContext& ctx, uint8_t* base, uint32_t dev) {
     l.timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!l.timer) StopInOrder(ctx, "Swap-limiter-timer", 88);
   }
-  if (interval != l.interval) l.next = 0;  // A new interval starts a new phase.
+  if (interval != l.interval || rate != l.rate) l.next = 0;  // A new period starts a new phase.
   l.interval = interval;
-  const int64_t period = int64_t(interval) * l.frequency / 60;
+  l.rate = rate;
+  const int64_t period = rate ? l.frequency / rate : int64_t(interval) * l.frequency / 60;
   LARGE_INTEGER now{};
   QueryPerformanceCounter(&now);
   ++l.paced;
