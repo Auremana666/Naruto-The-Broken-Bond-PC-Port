@@ -58,9 +58,11 @@ if(BROKENBOND_NATIVE_RENDERER)
          src/gpu/shaders/shader_cache_data.cpp
          # Opt-in studies: the CRT's srand/rand and the world conditions
          # (REX_RAND_TRACE, both renderer modes); the audio frame cadence
-         # (REX_AUDIO_TRACE, both renderer modes); file reads and XMA voices
+         # (REX_AUDIO_TRACE, both renderer modes); the XMA stream sample accounting
+         # (REX_XMA_STREAM_TRACE, both renderer modes); file reads and XMA voices
          # (REX_EXPORT_TRACE, native mode).
-         src/studies/rand_trace.cpp src/studies/audio_trace.cpp src/studies/export_trace.cpp
+         src/studies/rand_trace.cpp src/studies/audio_trace.cpp src/studies/xma_stream_trace.cpp
+         src/studies/export_trace.cpp
          src/studies/kernel_io_exports.cpp src/studies/kernel_xma_exports.cpp)
 endif()
 
