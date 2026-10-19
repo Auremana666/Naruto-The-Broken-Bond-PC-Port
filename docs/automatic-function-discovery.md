@@ -36,9 +36,10 @@ applied by [build-sdk.ps1](../scripts/build-sdk.ps1) to the pinned `sdk/` submod
 
 | File in the SDK | Responsibility |
 | --- | --- |
-| `src/codegen/phase_discover.cpp` | `discoverFunctionPointerTables` and integration with normal discovery. |
+| `src/codegen/phase_discover.cpp` | `discoverFunctionPointerTables`, `discoverCodeAddressReferences`, and integration with normal discovery. |
 | `src/system/function_dispatcher.cpp` | Guest target, LR, and SP in missing-function diagnostics. |
-| `tests/unit/codegen/function_pointer_table_test.cpp` | Synthetic PowerPC regression cases. |
+| `tests/unit/codegen/function_pointer_table_test.cpp` | Synthetic PowerPC regression cases for pointer tables. |
+| `tests/unit/codegen/code_address_reference_test.cpp` | Synthetic PowerPC regression cases for code address references. |
 | `tests/unit/CMakeLists.txt` | Registration in the SDK unit-test target. |
 
 The patch contains no Naruto addresses or class-name signatures. Address-specific
@@ -136,6 +137,83 @@ The correction reserves the **entire declared PDATA/config extent**, including
 not-yet-discovered gaps. Synthetic SEH records now verify this rule. There is no
 game-specific blacklist of handler addresses.
 
+## Code address references
+
+The game crashed at the end of the first fight with:
+
+```text
+[FATAL] Call to invalid or unregistered function at guest address 0x8215D000 (LR=0x8221B52C, SP=0x7029FB10)
+```
+
+The caller is the CRT `qsort` at `0x8221B460`, which calls its comparator with
+`bctrl`. The comparator's address is built in code, not stored in `.rdata`:
+
+```text
+8215D6B4  lis   r11, -0x7dea
+8215D6B8  mr    r3, r28
+8215D6BC  addi  r6, r11, -0x3000    ; r6 = 0x8215D000, the comparator
+8215D6C8  bl    0x8221b460          ; qsort
+```
+
+Nothing calls `0x8215D000` with `bl`, so call-graph discovery never registered
+it. Gap filling then registered `0x8215D028`, a block inside the comparator, as
+an independent function. The same scan of the image found 18 other functions of
+this kind that were never generated, including another `qsort` comparator at
+`0x825085F8` and ten member-pointer thunks at `0x824234D8`-`0x82423568`.
+
+The pinned SDK has a disabled `functionPointerScan` for this case. Its comment
+notes "too many false positives". It accepts any code address more than 4 KB
+from the reference, does not track register writes between `lis` and the use,
+and reads the wrong register field for `ori`. It is still disabled.
+
+`discoverCodeAddressReferences` runs after the pointer-table pass and feeds new
+entries back into normal discovery. It repeats until a round finds nothing,
+because an address-taken function can itself take the address of another one.
+
+1. It scans only blocks of functions that are already discovered, so data in an
+   executable section cannot form a reference. Register state starts empty at
+   every block and at every label, because another path can reach a label.
+2. It records the high half of each `lis rD`. A later `addi rD2, rS, imm` or
+   `ori rA, rS, imm` whose source register still holds that half produces a
+   candidate address.
+3. Any instruction that may write a tracked register clears it: loads, update
+   forms, and every other instruction field that can name a destination. A call
+   clears the volatile registers `r0` and `r3`-`r12`. An unconditional branch
+   clears everything. Forgetting too much only misses a reference; keeping a
+   stale high half would invent one.
+4. A candidate must be a four-byte-aligned executable address outside the
+   import/export ranges. It must not be a known switch table, and its first
+   word must not itself be a code address, which is the shape of a switch table
+   the scanner did not recognize.
+5. It must pass the same ownership and boundary rules as pointer-table entries:
+   no owned interval may cover it, and it must start a region or follow an
+   unconditional, non-call branch.
+
+Accepted entries get `FunctionAuthority::DISCOVERED` and are logged at debug
+level:
+
+```text
+Analyze: function 0x8215D000 referenced by address at 0x8215D6BC
+```
+
+The two synthetic cases cover a comparator, an `ori` callback, a chained
+reference from a newly discovered function, a high half overwritten by a load,
+a high half clobbered by a call, pointer data after a branch, an internal block
+of the caller, and a conditional-branch fallthrough.
+
+Against the previous generation, the output adds exactly 19 functions:
+
+```text
+8214F390 8215D000 82286010 8240BD38 824234D8 824234E8 824234F8
+82423508 82423518 82423528 82423538 82423548 82423558 82423568
+824B0D40 824B0D50 824D32D0 825085F8 82C09688
+```
+
+It removes `0x8215D028` and `0x8250866C`. These were blocks inside the new
+`0x8215D000` and `0x825085F8`, not independent functions. Nothing called them
+directly, and they are now labels in those functions. The bodies of the other
+32,460 generated functions are byte-identical.
+
 ## Validation and observed result
 
 The synthetic cases use invented addresses and small PowerPC instruction sequences,
@@ -148,7 +226,8 @@ table storage, and declared exception-handler ownership.
 | --- | --- |
 | Original SDK | Fails the positive thunk-recovery case. |
 | Intermediate implementation without full declared-range protection | Fails the two PDATA/config extent checks. |
-| Final patch | Passes 48 assertions across four test cases. |
+| Pointer tables only, without code address references | Fails the positive code-address case. |
+| Final patch | Passes 68 assertions across six test cases. |
 
 The game was then generated without the six temporary callback overrides. All
 ten investigated entries were present automatically:
@@ -205,7 +284,7 @@ PowerShell:
 ```powershell
 cmake -S sdk -B build/sdk -DREXGLUE_BUILD_TESTS=ON
 cmake --build build/sdk --config Release --target unit_tests --parallel 6
-& ./sdk/out/win-amd64/Release/unit_tests.exe '[pointer_table]'
+& ./sdk/out/win-amd64/Release/unit_tests.exe '[pointer_table],[code_address]'
 ```
 
 The before/after comparison in this session used isolated Catch2 executables
@@ -225,7 +304,8 @@ the same behavior.
 
 Discovery remains conservative. It does not recover every possible indirect
 target, decode runtime-created tables, or automatically promote addresses from
-other sections. Tables with too few independent known anchors can be missed.
+other sections. Code addresses built across blocks or with sequences other than
+`lis` plus `addi` or `ori` are not tracked. Tables with too few independent known anchors can be missed.
 Runtime misses therefore remain useful evidence: the diagnostic now reports the
 guest target, link register, and stack pointer. Investigate those misses and add
 appropriate regression cases before extending the rules.

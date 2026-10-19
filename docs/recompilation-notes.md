@@ -111,6 +111,16 @@ entries, the corrected output adds 53 function declarations and removes seven
 incorrect standalone registrations of internal labels; their parent functions
 retain the original control flow.
 
+On 2026-10-17 the game crashed at the end of the first fight. `qsort` at
+`0x8221B460` called the comparator `0x8215D000`, which was never registered:
+its address is built with `lis` plus `addi` in `0x8215D588` and nothing calls
+it with `bl`. The patch now also registers functions whose address is built in
+discovered code (`discoverCodeAddressReferences`, test tag `[code_address]`).
+The generation adds 19 functions, including that comparator and another one at
+`0x825085F8`. Two former standalone blocks become labels of their real
+functions, and all other generated function bodies are unchanged. The tests
+pass 68 assertions in six cases (`build/discovery-tests`).
+
 Missing-function runtime diagnostics now include guest LR and SP. SDK executable
 and runtime DLL hashes are checked by `scripts/build-game.ps1` to invalidate
 codegen after local SDK patches, whose version string may remain unchanged.
