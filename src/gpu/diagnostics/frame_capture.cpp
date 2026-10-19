@@ -87,10 +87,11 @@ std::string ReadFrontBuffer(uint32_t front, uint64_t n) {
 // another draw class (videos only: at most 8 own draws; menus: below 400; the
 // Story Mode scene) or forgot a texture base (D750), or registered at least
 // kTransitionRegistrations texture entries. Unset or 0: off. Evidence only:
-// each read waits for the GPU. Render thread only (own Swap).
+// each read waits for the GPU. Render thread only (own Swap). Independent of
+// REX_NATIVE_DIAGNOSTICS, as the frame trace: in Broken Bond that mode also
+// turns on Rise's START evidence and stops during device creation.
 uint64_t TransitionPeriod() {
   static const uint64_t value = [] {
-    if (!Diagnostics()) return uint64_t(0);
     const char* text = std::getenv("REX_NATIVE_TRANSITION_CAPTURES");
     return text && *text ? std::strtoull(text, nullptr, 10) : 0;
   }();
