@@ -95,6 +95,7 @@ These keys exist only in native renderer builds. Each takes effect on the next l
 | `max_frame_latency` | `1` | Frames queued ahead of the display, 1 to 3; 1 has the lowest latency |
 | `triple_buffering` | `false` | Three swapchain buffers instead of two |
 | `graphics_device` | `""` | The graphics card, by the name Windows gives it; empty is automatic. The log names the card in use (`Native renderer adapter:`) |
+| `frame_rate` | `30` | Frame rate from 30 to 240. `30` keeps the game's own; above 30 the renderer draws frames between the game's logic steps. See [Renderers](renderers.md#frame-rate) |
 
 For example, in `build/native/broken_bond.toml`:
 
@@ -103,6 +104,7 @@ renderer = "native"
 msaa_samples = 4
 transparency_antialiasing = true
 internal_resolution_scale = 1.5
+frame_rate = 60
 ```
 
 ## User files
