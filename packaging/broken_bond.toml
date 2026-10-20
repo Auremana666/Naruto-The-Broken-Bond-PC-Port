@@ -1,0 +1,14 @@
+# Portable defaults. Relative user data paths resolve beside the launcher.
+renderer = "native"
+native_backend = "d3d12"
+launcher_language = "en"
+user_language = 1
+input_backend = "sdl"
+resolution_scale = 1
+draw_resolution_scale_x = 1
+draw_resolution_scale_y = 1
+anisotropic_override = 5
+swap_post_effect = "fxaa"
+present_effect = "cas"
+vsync = true
+fullscreen = true
