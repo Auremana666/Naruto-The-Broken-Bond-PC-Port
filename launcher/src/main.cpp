@@ -267,6 +267,10 @@ int main(int argc, char* argv[]) {
             game_exe.c_str(), cmd_buf.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi);
 
         if (success) {
+          // The launcher exits before the game opens its window; without this
+          // grant the game could not bring its window to the front and would
+          // start behind the other windows (minimized when fullscreen).
+          AllowSetForegroundWindow(pi.dwProcessId);
           CloseHandle(pi.hThread);
           CloseHandle(pi.hProcess);
           status_msg = Tr(TextId::LaunchSuccessMsg);

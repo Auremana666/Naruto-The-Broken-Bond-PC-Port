@@ -80,7 +80,12 @@ if(BROKENBOND_NATIVE_RENDERER)
 endif()
 
 if(WIN32)
-    add_executable(broken_bond WIN32 ${BROKENBOND_SOURCES})
+    # The executable's icon (the launcher's), for the taskbar and Explorer.
+    enable_language(RC)
+    configure_file(src/broken_bond.rc.in "${CMAKE_CURRENT_BINARY_DIR}/broken_bond.rc" @ONLY)
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/broken_bond.rc" PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/assets/favicon.ico")
+    add_executable(broken_bond WIN32 ${BROKENBOND_SOURCES} "${CMAKE_CURRENT_BINARY_DIR}/broken_bond.rc")
 else()
     add_executable(broken_bond ${BROKENBOND_SOURCES})
 endif()

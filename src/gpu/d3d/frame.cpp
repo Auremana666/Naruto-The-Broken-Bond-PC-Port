@@ -159,9 +159,11 @@ std::string LimiterSummary() {
                      "\"timer_failures\":{},\"period\":\"{}\"}}", l.interval, l.rate, l.paced, l.waited, l.late,
                      l.max_late_us, l.timer_failures, l.rate ? "1/rate s" : "interval/60 s");
 }
-// The window title: the port's name and version (port_version.h) in place of
-// the SDK's executable name and build stamp, set once at the first own Swap,
-// and the frame-time meter after it: fps, mean and max frame time of the last
+// The window at the first own Swap: the port's name and version
+// (port_version.h) as the title, in place of the SDK's executable name and
+// build stamp, and the window brought to the front (restored if minimized),
+// since the launcher that started the game has exited by then and the window
+// may have opened behind the others. Then the frame-time meter: fps, mean and max frame time of the last
 // half second, measured between the ends of consecutive own Swaps (after the
 // limiter, the QPC of SwapLimiter), written twice per second as
 // "<title> | 30.0 fps | 33.3 ms (max 36.1)". Fire and forget on the UI thread
@@ -189,7 +191,11 @@ void MeterSwap() {
     auto* app = runtime ? runtime->app_context() : nullptr;
     if (hwnd && app) {
       m.titled = true;
-      app->CallInUIThreadDeferred([hwnd] { SetWindowTextW(hwnd, BaseTitle().c_str()); });
+      app->CallInUIThreadDeferred([hwnd] {
+        SetWindowTextW(hwnd, BaseTitle().c_str());
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        if (GetForegroundWindow() != hwnd) SetForegroundWindow(hwnd);
+      });
     }
   }
   const int64_t f = swap_limiter.frequency;
