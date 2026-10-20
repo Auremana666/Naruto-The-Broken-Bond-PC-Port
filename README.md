@@ -135,5 +135,7 @@ reading game memory, scripted test runs).
 
 ## License
 
-The code in this repository is released under the [MIT License](LICENSE). It does not cover the
-game, its code, art, music or trademarks, which belong to their owners.
+The code in this repository is released under the [GNU General Public License v3](LICENSE),
+the same license as [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp), whose
+work this port builds on. It does not cover the game, its code, art, music or trademarks, which
+belong to their owners.
