@@ -107,6 +107,13 @@ std::unordered_map<uint32_t, CameraTrack> cameras;  // By the view's entry.
 std::unordered_set<uint32_t> camera_entries_done;   // The entries handled in this display.
 std::vector<Written> written;         // The object matrices written in this view block.
 std::vector<Written> camera_written;  // The camera entries written in this view block.
+// The global matrices of the bone objects (transforms.h): the objects of the
+// list of a mounted object's root (the list the texture projector's lookup
+// 82BEB878 walks), by their matrix [X + 20], the owner the object X; written
+// for the whole view block.
+std::unordered_map<uint32_t, BoneTrack> global_tracks;
+std::vector<Written> global_written;
+int globals_enabled = -1;
 Applied applied;
 std::atomic<uint32_t> mounts_other_thread{0};
 // The pointers the engine freed (82120A70, any thread) since the last view
@@ -246,6 +253,51 @@ bool BonesEnabled() {
   }
   return bones_enabled == 1;
 }
+// The bone objects' global matrices (transforms.h);
+// REX_NATIVE_INTERPOLATION_BONE_GLOBALS=0 leaves them at the tick.
+bool GlobalsEnabled() {
+  if (globals_enabled < 0) {
+    const char* text = std::getenv("REX_NATIVE_INTERPOLATION_BONE_GLOBALS");
+    globals_enabled = BonesEnabled() && !(text && std::string_view(text) == "0") ? 1 : 0;
+  }
+  return globals_enabled == 1;
+}
+
+// The root of an object (82BDF2A0): up the parents ([[object + 28] + 8] + 4)
+// while the object has flag 1; the object itself when the chain breaks.
+uint32_t Root(uint8_t* base, uint32_t object) {
+  uint32_t flags = 0;
+  if (!Read32(base, object, flags) || !(flags & 1)) return object;
+  uint32_t node = object;
+  for (int depth = 0; depth < 64; ++depth) {
+    if (!(flags & 1)) return node;
+    uint32_t extension = 0, link = 0, parent = 0;
+    if (!Read32(base, node + 28, extension) || !extension || !Read32(base, extension + 8, link) || !link ||
+        !Read32(base, link + 4, parent) || !parent || !Read32(base, parent, flags))
+      return object;
+    node = parent;
+  }
+  return object;
+}
+// The bone objects of a root (the list 82BEB878 walks: the root has flag 2;
+// [[root + 28] + 0] the skeleton, [[skeleton + 12] + 0] the list of 8-byte
+// entries from +16 to +4, each an object pointer with two tag bits, those with
+// the tag 1 skipped; [skeleton + 28] the id table it needs). False when the
+// structure is not there or cannot be read.
+bool RootBones(uint8_t* base, uint32_t root, std::vector<uint32_t>& out) {
+  uint32_t flags = 0, extension = 0, skeleton = 0, holder = 0, list = 0, ids = 0, begin = 0, end = 0;
+  if (!Read32(base, root, flags) || !(flags & 2) || !Read32(base, root + 28, extension) || !extension ||
+      !Read32(base, extension, skeleton) || !skeleton || !Read32(base, skeleton + 12, holder) || !holder ||
+      !Read32(base, holder, list) || !list || !Read32(base, skeleton + 28, ids) || !ids ||
+      !Read32(base, list + 16, begin) || !Read32(base, list + 4, end) || end < begin || end - begin > 8 * 4096)
+    return false;
+  for (uint32_t p = begin; p + 8 <= end; p += 8) {
+    uint32_t x = 0;
+    if (!Read32(base, p, x)) return false;
+    if (x && (x & 3) == 0) out.push_back(x);
+  }
+  return true;
+}
 
 // The matrices the display turns in place (transforms.h):
 // REX_NATIVE_INTERPOLATION_TURNED=0 leaves them as the view block left them;
@@ -273,12 +325,15 @@ void SwitchTurned() {
 // object matrices written, those the view block changed, those only turned
 // (given the tick's scale and position back), turned ones written again in a
 // frame without a tick, and those written outside the logic (lost); the
-// camera, the poses and the effects' waits.
+// camera, the poses, the bone objects' globals written for the whole block
+// (those the block changed, those cut at the tick, and the roots walked) and
+// the effects' waits.
 constexpr uint64_t kRecordEvery = 300;
 struct Counts {
   uint64_t blocks = 0, ticks = 0, objects = 0, object_cuts = 0, cameras = 0, camera_cuts = 0;
   uint64_t changed = 0, turned = 0, rewritten = 0, lost = 0;
   uint64_t poses = 0, bones = 0, bone_cuts = 0, bones_lost = 0, pose_other_thread = 0;
+  uint64_t globals = 0, globals_changed = 0, global_cuts = 0, globals_lost = 0, roots = 0;
   uint64_t effects_waits = 0, effects_wait_us = 0, effects_wait_max_us = 0, effects_timeouts = 0;
 } counts;
 uint64_t blocks_total = 0;
@@ -305,12 +360,14 @@ void Count(bool tick) {
       "\"blocks_total\":{},\"blocks\":{},\"ticks\":{},\"objects\":{},\"object_cuts\":{},\"cameras\":{},"
       "\"camera_cuts\":{},\"changed\":{},\"turned\":{},\"rewritten\":{},\"lost\":{},\"turned_on\":{},"
       "\"turned_switched\":{},\"poses\":{},\"bones\":{},\"bone_cuts\":{},\"bones_lost\":{},\"pose_other_thread\":{},"
+      "\"globals\":{},\"globals_changed\":{},\"global_cuts\":{},\"globals_lost\":{},\"roots\":{},\"globals_on\":{},"
       "\"mounts_other_thread\":{},\"effects_waits\":{},\"effects_wait_us\":{},\"effects_wait_max_us\":{},"
-      "\"effects_timeouts\":{},\"tracks\":{},\"bone_tracks\":{},\"camera_tracks\":{},\"resets\":{}",
+      "\"effects_timeouts\":{},\"tracks\":{},\"bone_tracks\":{},\"global_tracks\":{},\"camera_tracks\":{},\"resets\":{}",
       blocks_total, c.blocks, c.ticks, c.objects, c.object_cuts, c.cameras, c.camera_cuts, c.changed, c.turned,
       c.rewritten, c.lost, TurnedEnabled(), turned_switched, c.poses, c.bones, c.bone_cuts, c.bones_lost,
-      c.pose_other_thread, mounts_other_thread.load(), c.effects_waits, c.effects_wait_us, c.effects_wait_max_us,
-      c.effects_timeouts, tracks.size(), bone_tracks.size(), cameras.size(), resets));
+      c.pose_other_thread, c.globals, c.globals_changed, c.global_cuts, c.globals_lost, c.roots, GlobalsEnabled(),
+      mounts_other_thread.load(), c.effects_waits, c.effects_wait_us, c.effects_wait_max_us,
+      c.effects_timeouts, tracks.size(), bone_tracks.size(), global_tracks.size(), cameras.size(), resets));
   counts = {};
   turned_switched = false;
 }
@@ -460,6 +517,7 @@ void ViewStart(uint8_t* base) {
     if (collecting && !(tracks.empty() && bone_tracks.empty() && cameras.empty() && candidates.empty())) ++resets;
     tracks.clear();
     bone_tracks.clear();
+    global_tracks.clear();
     cameras.clear();
     candidates.clear();
     std::lock_guard lock(freed_mutex);
@@ -485,14 +543,17 @@ void ViewStart(uint8_t* base) {
     if (overflow) {
       tracks.clear();
       bone_tracks.clear();
+      global_tracks.clear();
       candidates.clear();
-    } else if (!gone.empty() && !(tracks.empty() && bone_tracks.empty() && candidates.empty())) {
+    } else if (!gone.empty() && !(tracks.empty() && bone_tracks.empty() && global_tracks.empty() && candidates.empty())) {
       const std::unordered_set<uint32_t> set(gone.begin(), gone.end());
       for (auto it = tracks.begin(); it != tracks.end();)
         it = set.count(it->first) || set.count(it->second.matrix) ? tracks.erase(it) : std::next(it);
       for (auto it = bone_tracks.begin(); it != bone_tracks.end();)
         it = set.count(it->first) || set.count(it->second.owner) || set.count(it->second.bone) ? bone_tracks.erase(it)
                                                                                                 : std::next(it);
+      for (auto it = global_tracks.begin(); it != global_tracks.end();)
+        it = set.count(it->first) || set.count(it->second.owner) ? global_tracks.erase(it) : std::next(it);
       std::erase_if(candidates, [&](uint32_t object) { return set.count(object) != 0; });
     }
   }
@@ -528,6 +589,8 @@ void ViewStart(uint8_t* base) {
     for (auto it = tracks.begin(); it != tracks.end();) it = it->second.tick + 2 < tick ? tracks.erase(it) : std::next(it);
     for (auto it = bone_tracks.begin(); it != bone_tracks.end();)
       it = it->second.tick + 2 < tick ? bone_tracks.erase(it) : std::next(it);
+    for (auto it = global_tracks.begin(); it != global_tracks.end();)
+      it = it->second.tick + 2 < tick ? global_tracks.erase(it) : std::next(it);
     for (auto it = cameras.begin(); it != cameras.end();) it = it->second.tick + 2 < tick ? cameras.erase(it) : std::next(it);
   }
   const float alpha = f.alpha;
@@ -571,6 +634,55 @@ void ViewStart(uint8_t* base) {
     written.push_back(w);
     object_written.insert(w.address);
     ++applied.objects;
+  }
+  // The global matrices [X + 20] of the bone objects X of each mounted
+  // object's root (transforms.h), for the whole view block: the texture
+  // projector of a material (82155868 -> 82155608 -> 821551B0, types 4 and 5)
+  // inverts one of them against the object's matrix, and the logic writes
+  // them in the tick with the relative matrices the poses read (global =
+  // relative x object, the engine's own 82B97F3C). Tracked by matrix like the
+  // bones, with the same cuts; one no root listed for two ticks leaves.
+  if (!GlobalsEnabled()) return;
+  std::unordered_set<uint32_t> roots_done;
+  static std::vector<uint32_t> bones;  // Main thread: a scratch kept across the blocks.
+  for (const uint32_t object : candidates) {
+    const uint32_t root = Root(base, object);
+    if (!roots_done.insert(root).second) continue;
+    bones.clear();
+    if (!RootBones(base, root, bones)) continue;
+    ++counts.roots;
+    for (const uint32_t x : bones) {
+      uint32_t m = 0;
+      if (!Read32(base, x + 20, m) || !m || object_written.count(m)) continue;
+      Matrix live;
+      if (!ReadFloats(base, m, live.data(), 16)) continue;
+      BoneTrack& t = global_tracks[m];
+      if (f.tick && t.tick != tick) {
+        const bool continuing = t.tick + 1 == tick && t.owner == x;
+        t.previous = continuing ? t.current : live;
+        t.current = live;
+        const bool cut = continuing && MatrixCut(t.previous, t.current);
+        if (cut) ++counts.global_cuts;
+        t.valid = continuing && !cut && Plausible(live) && Finite(t.previous.data(), 16) && Finite(live.data(), 16);
+        t.owner = x;
+        t.tick = tick;
+      }
+      if (!t.valid || t.tick != tick || t.previous == t.current) continue;
+      if (live != t.current) {  // Written outside the logic since the tick.
+        t.valid = false;
+        ++counts.globals_lost;
+        continue;
+      }
+      Written w;
+      w.address = m;
+      w.count = 16;
+      BlendMatrix(t.previous.data(), t.current.data(), alpha, w.value.data());
+      std::copy(live.begin(), live.end(), w.live.begin());
+      WriteMatrix(base, m, w.value);
+      global_written.push_back(w);
+      object_written.insert(m);
+      ++counts.globals;
+    }
   }
 }
 
@@ -620,6 +732,9 @@ void Restore(uint8_t* base) {
     ++counts.turned;
   }
   written.clear();
+  for (const auto& w : global_written)
+    if (!PutBack(base, w)) ++counts.globals_changed;
+  global_written.clear();
   PutBack(base, camera_written);
   camera_written.clear();
   collecting = false;

@@ -51,6 +51,18 @@
 // alpha, tracked by address with the same cuts as the objects, and come back
 // right after it.
 //
+// The global matrices of the bone objects: the logic writes, with the relative
+// matrices the poses read, the global matrix [X + 20] of each bone object X
+// (global = relative x the object's matrix, the engine's own 82B97F3C). The
+// display reads the globals too: the texture projector of a material
+// (82155868 -> 82155608 -> 821551B0, types 4 and 5) inverts one against the
+// object's matrix, and Naruto's eyes are a texture projected that way over the
+// eyeball (its iris left the eyeball on his sharp turns, a tick ahead of the
+// interpolated skin). From the view start on, the globals of the bone objects
+// of each mounted object's root (the list 82BEB878 walks) go at alpha for the
+// whole view block, tracked by matrix like the bones, and come back after the
+// delivery. REX_NATIVE_INTERPOLATION_BONE_GLOBALS=0 leaves them at the tick.
+//
 // On with the gate of tick.h (frame_rate above 30, or
 // REX_NATIVE_STATE_INTERPOLATION=1);
 // REX_NATIVE_INTERPOLATION_TRANSFORMS=0 leaves the frames between the ticks
