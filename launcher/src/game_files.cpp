@@ -4,6 +4,7 @@
 #include <bcrypt.h>
 
 #include <array>
+#include <algorithm>
 #include <fstream>
 
 bool ValidateGameExecutable(const std::filesystem::path& path, std::string& error) {
@@ -13,6 +14,16 @@ bool ValidateGameExecutable(const std::filesystem::path& path, std::string& erro
     error = "Could not read default.xex in the selected game folder.";
     return false;
   }
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec) {
+    error = "Could not read the game executable size.";
+    return false;
+  }
+  return ValidateGameExecutable(file, size, error);
+}
+
+bool ValidateGameExecutable(std::istream& file, uint64_t size, std::string& error) {
   struct HashContext {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -26,12 +37,14 @@ bool ValidateGameExecutable(const std::filesystem::path& path, std::string& erro
       BCryptCreateHash(context.algorithm, &context.hash, nullptr, 0, nullptr, 0, 0) < 0)
     return false;
   std::array<unsigned char, 65536> buffer;
-  while (file) {
-    file.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
+  while (size) {
+    const auto count = static_cast<std::streamsize>(std::min<uint64_t>(size, buffer.size()));
+    file.read(reinterpret_cast<char*>(buffer.data()), count);
+    if (file.gcount() != count) return false;
     if (BCryptHashData(context.hash, buffer.data(), static_cast<ULONG>(file.gcount()), 0) < 0)
       return false;
+    size -= count;
   }
-  if (!file.eof()) return false;
   std::array<unsigned char, 32> digest;
   if (BCryptFinishHash(context.hash, digest.data(), digest.size(), 0) < 0) return false;
   constexpr char hex[] = "0123456789abcdef";

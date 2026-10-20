@@ -6,13 +6,8 @@
 
 #include "key_bindings.h"
 
-// The game executable next to the launcher carries the native renderer next to
-// the Xenos plugin (BROKENBOND_NATIVE_RENDERER_BOOTSTRAP builds).
-#ifdef BROKENBOND_LAUNCHER_NATIVE_RENDERER
+// The launcher targets native game builds; API availability matches that build.
 inline constexpr bool kNativeRendererBuilt = true;
-#else
-inline constexpr bool kNativeRendererBuilt = false;
-#endif
 #if defined(BROKENBOND_LAUNCHER_NATIVE_VULKAN)
 inline constexpr bool kNativeVulkanBuilt = true;
 #else
@@ -25,10 +20,7 @@ inline constexpr bool kNativeD3d12Built = true;
 #endif
 
 struct GameConfig {
-  std::string gpu_plugin = "xenos";
-  // "xenos" (the default) or "native" (native_backend); saved
-  // only when the executable carries the native renderer.
-  std::string renderer = "xenos";
+  std::string renderer = "native";
   std::string native_backend = kNativeD3d12Built ? "d3d12" : "vulkan";
   // The graphics card by its name, for both renderers; empty = automatic.
   std::string graphics_device = "";
@@ -88,6 +80,7 @@ struct GameConfig {
 
 class ConfigManager {
  public:
+  static void NormalizeRenderer(GameConfig& config);
   static bool Load(const std::filesystem::path& toml_path, GameConfig& config);
   static bool Save(const std::filesystem::path& toml_path, const GameConfig& config);
 };

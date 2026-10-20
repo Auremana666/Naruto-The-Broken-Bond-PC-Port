@@ -80,11 +80,11 @@ int main(int argc, char** argv) {
 
     Write(path, "renderer = 'native'\nuser_data_root = 'my saves'\nkeybind_a = 'J,K,L'\n");
     GameConfig options;
-    Require(options.renderer == "xenos" && options.frame_rate == 30, "Xenos defaults changed");
+    Require(options.renderer == "native" && options.frame_rate == 30, "Native defaults changed");
     Require(ConfigManager::Load(path, options), "Extended settings failed to load");
     Require(options.key_binds[0] == "J,K,L", "Loading truncated hand-written key alternatives");
     options.graphics_device = "Test graphics adapter";
-    options.native_backend = "vulkan";
+    options.native_backend = kNativeVulkanBuilt ? "vulkan" : "d3d12";
     options.launcher_language = "pt_BR";
     options.mnk_mouse = false;
     options.mnk_sensitivity = 1.75;
@@ -109,21 +109,42 @@ int main(int argc, char** argv) {
     Require(!extended.contains("ultrawide_target_aspect"), "Saving introduced an unsupported aspect option");
     if (kNativeRendererBuilt) {
       Require(restored.msaa_samples == 8 && restored.frame_rate == 120 && restored.brightness == 0.6 &&
-                  restored.native_backend == "vulkan" &&
+                  restored.native_backend == options.native_backend &&
                   restored.internal_resolution_scale == 1.5 && restored.max_frame_latency == 3 &&
                   restored.triple_buffering && restored.transparency_antialiasing,
               "Native renderer options did not persist");
-    } else {
-      Require(!extended.contains("frame_rate") && extended["renderer"].value<std::string>() == "native",
-              "Xenos launcher overwrote unmanaged native settings");
     }
-    Write(path, "renderer = 'xenos'\nnative_backend = 'vulkan'\n");
-    GameConfig xenos;
-    Require(ConfigManager::Load(path, xenos) && xenos.renderer == "xenos" &&
-                xenos.native_backend == "vulkan", "Loading Vulkan preference changed the Xenos selection");
-    Require(ConfigManager::Save(path, xenos), "Xenos selection failed to save");
-    Require(toml::parse_file(path.string())["renderer"].value<std::string>() == "xenos",
-            "Saving a native-capable configuration changed the Xenos selection");
+    Write(path, "renderer = 'xenos'\ngpu_plugin = 'xenos'\nnative_backend = 'vulkan'\nuser_language = 4\nuser_data_root = 'my saves'\n");
+    GameConfig migrated;
+    Require(ConfigManager::Load(path, migrated) && migrated.renderer == "native" &&
+                migrated.native_backend == (kNativeVulkanBuilt ? "vulkan" : "d3d12"),
+            "Legacy renderer selection was not migrated to a compiled native API");
+    Require(ConfigManager::Save(path, migrated), "Migrated settings failed to save");
+    const auto migrated_table = toml::parse_file(path.string());
+    Require(migrated_table["renderer"].value<std::string>() == "native" &&
+                !migrated_table.contains("gpu_plugin") && migrated.user_language == 4 &&
+                migrated.user_data_root == "my saves", "Migration lost settings or retained the GPU plugin");
+    Write(path, "renderer = 'xenos'\nnative_backend = 'invalid'\ngraphics_device = 'stale device'\n");
+    Require(ConfigManager::Load(path, migrated) && migrated.graphics_device.empty() &&
+                migrated.native_backend == (kNativeD3d12Built ? "d3d12" : "vulkan"),
+            "An unavailable API or its device selection survived migration");
+    migrated.renderer = "xenos";
+    migrated.native_backend = "invalid";
+    Require(ConfigManager::Save(path, migrated), "Saving stale settings failed");
+    Require(toml::parse_file(path.string())["renderer"].value<std::string>() == "native",
+            "Save accepted a non-native renderer");
+
+    Write(path, "renderer = 'native'\nnative_backend = 'vulkan'\ngraphics_device = 'Vulkan adapter'\n"
+                "user_language = 4\nuser_data_root = 'my saves'\n");
+    Require(ConfigManager::Load(path, migrated), "Previous native configuration failed to load");
+    Require(migrated.native_backend == (kNativeVulkanBuilt ? "vulkan" : "d3d12") &&
+                (kNativeVulkanBuilt || migrated.graphics_device.empty()) &&
+                migrated.user_language == 4 && migrated.user_data_root == "my saves",
+            "Removing Vulkan failed to migrate the API or preserve user preferences");
+    Require(ConfigManager::Save(path, migrated), "Migrated Vulkan settings failed to save");
+    Require(toml::parse_file(path.string())["native_backend"].value<std::string>() ==
+                (kNativeVulkanBuilt ? "vulkan" : "d3d12"),
+            "Removed Vulkan selection was written back to the configuration");
 
     const auto repo = root / "repository";
     const auto base = repo / "build" / "game";

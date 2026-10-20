@@ -5,12 +5,19 @@
 #include <fstream>
 #include <toml++/toml.hpp>
 
+void ConfigManager::NormalizeRenderer(GameConfig& config) {
+  config.renderer = "native";
+  if ((config.native_backend == "d3d12" && kNativeD3d12Built) ||
+      (config.native_backend == "vulkan" && kNativeVulkanBuilt)) return;
+  config.native_backend = kNativeD3d12Built ? "d3d12" : "vulkan";
+  config.graphics_device.clear();
+}
+
 bool ConfigManager::Load(const std::filesystem::path& toml_path, GameConfig& config) {
   try {
     std::ifstream input(toml_path);
     if (!input) return false;
     const auto tbl = toml::parse(input);
-    if (auto v = tbl["gpu_plugin"].value<std::string>()) config.gpu_plugin = *v;
     if (auto v = tbl["graphics_device"].value<std::string>()) config.graphics_device = *v;
     if (auto v = tbl["input_backend"].value<std::string>()) config.input_backend = *v;
     if (auto v = tbl["swap_post_effect"].value<std::string>()) config.swap_post_effect = *v;
@@ -47,13 +54,16 @@ bool ConfigManager::Load(const std::filesystem::path& toml_path, GameConfig& con
     for (std::size_t i = 0; i < kKeyActionCount; ++i) {
       if (auto v = tbl[KeyActionOption(i)].value<std::string>()) config.key_binds[i] = *v;
     }
+    NormalizeRenderer(config);
     return true;
   } catch (const toml::parse_error&) {
     return false;
   }
 }
 
-bool ConfigManager::Save(const std::filesystem::path& toml_path, const GameConfig& config) {
+bool ConfigManager::Save(const std::filesystem::path& toml_path, const GameConfig& requested) {
+  auto config = requested;
+  NormalizeRenderer(config);
   toml::table tbl;
   std::error_code ec;
   const bool exists = std::filesystem::exists(toml_path, ec);
@@ -68,7 +78,7 @@ bool ConfigManager::Save(const std::filesystem::path& toml_path, const GameConfi
       return false;
     }
   }
-  tbl.insert_or_assign("gpu_plugin", config.gpu_plugin);
+  tbl.erase("gpu_plugin");
   tbl.insert_or_assign("graphics_device", config.graphics_device);
   tbl.insert_or_assign("input_backend", config.input_backend);
   tbl.insert_or_assign("swap_post_effect", config.swap_post_effect);

@@ -247,10 +247,10 @@ int main(int argc, char* argv[]) {
           request_launch = false;
           continue;
         }
-        cmdline += L" --user_data_root=" + QuoteProcessArgument(user_dir.wstring()) + L" --gpu_plugin=xenos";
-        if (kNativeRendererBuilt) {
-          cmdline += config.renderer == "native" ? L" --renderer=native" : L" --renderer=xenos";
-        }
+        ConfigManager::NormalizeRenderer(config);
+        cmdline += L" --user_data_root=" + QuoteProcessArgument(user_dir.wstring());
+        cmdline += L" --renderer=native --native_backend=" +
+                   QuoteProcessArgument(game_paths::FromUtf8(config.native_backend).wstring());
         cmdline += L" --game_data_root=" + QuoteProcessArgument(game_data.wstring());
 
         std::vector<wchar_t> cmd_buf(cmdline.begin(), cmdline.end());

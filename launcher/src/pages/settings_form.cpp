@@ -23,7 +23,7 @@ constexpr ImU32 kHighlightFill = IM_COL32(42, 33, 25, 255);
 constexpr ImU32 kHighlightBorder = IM_COL32(122, 64, 31, 255);
 
 bool Shown(const Option& option) {
-  return option.renderer != Renderer::kNative || kNativeRendererBuilt;
+  return option.renderer != Renderer::kXenos;
 }
 
 bool UsedBy(const Option& option, bool native) {

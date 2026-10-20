@@ -76,7 +76,7 @@ inline constexpr const char* kEs[] = {
     "Idioma de la interfaz del launcher",  // LauncherLanguageTooltip
     "Xenos (GPU emulada)",  // RendererXenos
     "Nativo (Direct3D 12)",  // RendererNative
-    "Xenos emula la GPU de Xbox 360 y es la opción predeterminada. Direct3D 12 nativo está disponible en las compilaciones que lo incluyen; sus opciones solo se aplican al seleccionar Nativo.",  // RendererDescription
+    "Elige una API gráfica nativa. Solo se muestran las API incluidas en esta versión. La selección se aplica al iniciar el juego de nuevo.",  // RendererDescription
     "No disponible con el renderizador nativo. Elige Xenos en Renderizador para usarlo.",  // XenosOnlyReason
     "MSAA",  // MsaaLabel
     "4x (original)",  // MsaaOriginal
@@ -144,7 +144,7 @@ inline constexpr const char* kEs[] = {
     "Clic central",  // MouseMiddleName
     "No se pudo guardar. Revisa el archivo de configuración y los permisos de escritura de la carpeta.",  // SaveFailed
     "No disponible",  // UnavailableTag
-    "Ultrawide requiere validar la proyección de cámara de Broken Bond y la presentación de Xenos. El juego utiliza 16:9.",  // AspectUnavailableReason
+    "Ultrawide requiere validar la proyección de cámara de Broken Bond y la presentación del juego. El juego utiliza 16:9.",  // AspectUnavailableReason
 };
 
 }  // namespace localization_strings

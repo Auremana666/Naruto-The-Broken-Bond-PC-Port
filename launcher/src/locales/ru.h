@@ -76,7 +76,7 @@ inline constexpr const char* kRu[] = {
     "Язык интерфейса лаунчера",  // LauncherLanguageTooltip
     "Xenos (эмуляция GPU)",  // RendererXenos
     "Нативный (Direct3D 12)",  // RendererNative
-    "Xenos эмулирует GPU Xbox 360 и используется по умолчанию. Нативный Direct3D 12 доступен в сборках с его поддержкой; его параметры действуют только при выборе нативного рендерера.",  // RendererDescription
+    "Выберите нативный графический API. Доступны только API, включённые в эту сборку. Выбор применяется при следующем запуске игры.",  // RendererDescription
     "Недоступно с нативным рендерером. Чтобы включить, выберите Xenos в пункте «Рендерер».",  // XenosOnlyReason
     "MSAA",  // MsaaLabel
     "4x (оригинал)",  // MsaaOriginal
@@ -144,7 +144,7 @@ inline constexpr const char* kRu[] = {
     "СКМ",  // MouseMiddleName
     "Не удалось сохранить. Проверьте файл настроек и права на запись в папку.",  // SaveFailed
     "Недоступно",  // UnavailableTag
-    "Для ultrawide ещё требуется проверить проекцию камеры Broken Bond и вывод Xenos. Игра использует 16:9.",  // AspectUnavailableReason
+    "Для ultrawide ещё требуется проверить проекцию камеры Broken Bond и вывод изображения. Игра использует 16:9.",  // AspectUnavailableReason
 };
 
 }  // namespace localization_strings

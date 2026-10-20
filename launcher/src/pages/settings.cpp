@@ -25,7 +25,7 @@ constexpr Option kSkipIntro{TextId::SkipIntroLabel, TextId::SkipIntroDescription
 constexpr Option kRenderer{TextId::RendererLabel, TextId::RendererDescription};
 constexpr Option kGraphicsDevice{TextId::GraphicsDeviceLabel, TextId::GraphicsDeviceDescription};
 constexpr Option kResolution{TextId::ResolutionLabel, TextId::ResolutionDescription};
-constexpr Option kAspect{TextId::AspectLabel, TextId::AspectDescription, Renderer::kXenos,
+constexpr Option kAspect{TextId::AspectLabel, TextId::AspectDescription, Renderer::kBoth,
                           TextId::Count, false};
 constexpr Option kBrightness{TextId::BrightnessLabel, TextId::BrightnessDescription, Renderer::kNative};
 constexpr Option kVsync{TextId::VsyncLabel, TextId::VsyncDescription, Renderer::kBoth,
@@ -95,17 +95,17 @@ void RenderGameGroup(OptionList& list, GameConfig& config) {
 void RenderDisplayGroup(OptionList& list, GameConfig& config) {
   bool native = kNativeRendererBuilt && config.renderer == "native";
   if (kNativeRendererBuilt) {
-    std::vector<const char*> renderers{Tr(TextId::RendererXenos)};
-    std::vector<std::string> backends{""};
+    std::vector<const char*> renderers;
+    std::vector<std::string> backends;
     if (kNativeD3d12Built) { renderers.push_back("Native: Direct3D 12"); backends.emplace_back("d3d12"); }
     if (kNativeVulkanBuilt) { renderers.push_back("Native: Vulkan"); backends.emplace_back("vulkan"); }
-    int renderer = native ? -1 : 0;
-    for (size_t i = 1; i < backends.size(); ++i)
+    int renderer = 0;
+    for (size_t i = 0; i < backends.size(); ++i)
       if (native && config.native_backend == backends[i]) renderer = int(i);
     if (list.Combo(kRenderer, renderer, renderers) && renderer >= 0) {
-      native = renderer != 0;
-      config.renderer = native ? "native" : "xenos";
-      if (native) config.native_backend = backends[renderer];
+      native = true;
+      config.renderer = "native";
+      config.native_backend = backends[renderer];
       config.graphics_device.clear();
     }
   }

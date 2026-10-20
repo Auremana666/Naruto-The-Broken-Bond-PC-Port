@@ -99,7 +99,7 @@ const char* const kStringsEn[] = {
     // --- Renderer ---
     "Xenos (emulated GPU)",  // RendererXenos
     "Native (Direct3D 12)",  // RendererNative
-    "Xenos emulates the Xbox 360 GPU and is the default. Native Direct3D 12 and Vulkan appear when included in the build; native options apply only to those selections.",  // RendererDescription
+    "Choose a native graphics API. Only APIs included in this build are listed. The selection takes effect the next time the game starts.",  // RendererDescription
     "Not available with the native renderer. Choose Xenos under Renderer to use it.",  // XenosOnlyReason
     "MSAA",  // MsaaLabel
     "4x (original)",  // MsaaOriginal
@@ -167,7 +167,7 @@ const char* const kStringsEn[] = {
     "Middle mouse",  // MouseMiddleName
     "Could not save settings. Check the configuration file and folder write permissions.",  // SaveFailed
     "Unavailable",  // UnavailableTag
-    "Ultrawide is not available yet: Broken Bond camera projection and Xenos presentation still need validation. The game uses 16:9.",  // AspectUnavailableReason
+    "Ultrawide is not available yet: Broken Bond camera projection and presentation still need validation. The game uses 16:9.",  // AspectUnavailableReason
 };
 
 // Portuguese string table (pt-BR)
@@ -247,7 +247,7 @@ const char* const kStringsPtBr[] = {
     // --- Renderer ---
     "Xenos (GPU emulada)",  // RendererXenos
     "Nativo (Direct3D 12)",  // RendererNative
-    "Xenos emula a GPU do Xbox 360 e é o padrão. Direct3D 12 nativo está disponível nas compilações que o incluem; suas opções só se aplicam quando Nativo está selecionado.",  // RendererDescription
+    "Escolha uma API gráfica nativa. Apenas as APIs incluídas nesta compilação são listadas. A seleção entra em vigor na próxima inicialização do jogo.",  // RendererDescription
     "Indisponível com o renderizador nativo. Escolha Xenos em Renderizador para usar.",  // XenosOnlyReason
     "MSAA",  // MsaaLabel
     "4x (original)",  // MsaaOriginal
@@ -315,7 +315,7 @@ const char* const kStringsPtBr[] = {
     "Mouse meio",  // MouseMiddleName
     "Não foi possível salvar. Verifique o arquivo de configuração e a permissão de escrita na pasta.",  // SaveFailed
     "Indisponível",  // UnavailableTag
-    "Ultrawide ainda não está disponível: a projeção da câmera de Broken Bond e a apresentação do Xenos precisam ser validadas. O jogo usa 16:9.",  // AspectUnavailableReason
+    "Ultrawide ainda não está disponível: a projeção da câmera e a apresentação de Broken Bond precisam ser validadas. O jogo usa 16:9.",  // AspectUnavailableReason
 };
 
 static_assert(std::size(kStringsEn) == static_cast<size_t>(TextId::Count));

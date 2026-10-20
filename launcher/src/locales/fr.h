@@ -76,7 +76,7 @@ inline constexpr const char* kFr[] = {
     "Langue de l'interface du lanceur",  // LauncherLanguageTooltip
     "Xenos (GPU émulé)",  // RendererXenos
     "Natif (Direct3D 12)",  // RendererNative
-    "Xenos émule le GPU Xbox 360 et reste le choix par défaut. Le rendu Direct3D 12 natif est disponible dans les versions qui l’incluent ; ses options s’appliquent uniquement avec Natif.",  // RendererDescription
+    "Choisissez une API graphique native. Seules les API incluses dans cette version sont proposées. Le choix prend effet au prochain lancement du jeu.",  // RendererDescription
     "Non disponible avec le moteur de rendu natif. Choisissez Xenos dans Moteur de rendu pour l'utiliser.",  // XenosOnlyReason
     "MSAA",  // MsaaLabel
     "4x (original)",  // MsaaOriginal
@@ -144,7 +144,7 @@ inline constexpr const char* kFr[] = {
     "Clic milieu",  // MouseMiddleName
     "Enregistrement impossible. Vérifiez le fichier de configuration et les droits d’écriture du dossier.",  // SaveFailed
     "Indisponible",  // UnavailableTag
-    "L’ultrawide attend la validation de la projection de caméra de Broken Bond et de la présentation Xenos. Le jeu utilise le format 16:9.",  // AspectUnavailableReason
+    "L’ultrawide attend la validation de la projection de caméra de Broken Bond et de la présentation. Le jeu utilise le format 16:9.",  // AspectUnavailableReason
 };
 
 }  // namespace localization_strings
