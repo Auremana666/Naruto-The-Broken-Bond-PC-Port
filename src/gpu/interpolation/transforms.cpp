@@ -56,8 +56,13 @@ constexpr size_t kCameraFloats = 16;
 using Matrix = std::array<float, 16>;
 using Camera = std::array<float, kCameraFloats>;
 // An engine matrix is 68 bytes: the 16 floats and a type word at +64. With
-// kScaleFlag in it, the fourth column (+12, +28, +44) scales the rows; without
-// it the column is not read and may hold anything.
+// kScaleFlag in it, the fourth column (+12, +28, +44) scales the rows. Without
+// it the engine's own transforms leave the column alone, but Broken Bond still
+// reads it elsewhere: the light direction of a character's materials (VS c27)
+// comes out tilted when the column holds anything but the object's own values
+// (the title keeps 0 there), so the blend keeps the column as the two ticks
+// have it and never forces a scale of 1 into it (Rise did; its title does not
+// read the column).
 constexpr uint32_t kTypeOffset = 64, kScaleFlag = 8;
 struct Track {
   uint32_t matrix = 0;
@@ -90,10 +95,6 @@ struct Written {
   uint32_t address = 0, count = 0;
   Matrix value{}, live{};
   uint32_t object = 0;  // An object matrix's object, 0 otherwise.
-  // The type word written with the scale flag (the blend scales a matrix the
-  // tick's does not), and the live one.
-  bool type_written = false;
-  uint32_t type_value = 0, type_live = 0;
 };
 
 int enabled = -1, bones_enabled = -1, turned_enabled = -1;
@@ -187,11 +188,6 @@ bool Plausible(const Matrix& m) {
   for (int i = 12; i < 15; ++i)
     if (!(std::fabs(m[i]) < 1e6f)) return false;
   return true;
-}
-// The fourth column as the engine reads it: a scale of 1 without the flag.
-Matrix ScaleAsRead(Matrix m, uint32_t type) {
-  if (!(type & kScaleFlag)) m[3] = m[7] = m[11] = 1.0f;
-  return m;
 }
 bool MatrixCut(const Matrix& a, const Matrix& b) {
   if (Distance3(a.data() + 12, b.data() + 12) > kCutDistance) return true;
@@ -617,20 +613,12 @@ void ViewStart(uint8_t* base) {
     w.address = t.matrix;
     w.count = 16;
     w.object = object;
-    const Matrix from = ScaleAsRead(t.previous, t.previous_type), to = ScaleAsRead(t.current, t.current_type);
-    BlendMatrix(from.data(), to.data(), alpha, w.value.data());
+    // A matrix whose scale flag changed between the ticks has a fourth column
+    // that means different things at the two ends: it stays at the tick.
+    if ((t.previous_type ^ t.current_type) & kScaleFlag) continue;
+    BlendMatrix(t.previous.data(), t.current.data(), alpha, w.value.data());
     std::copy(t.current.begin(), t.current.end(), w.live.begin());
     WriteMatrix(base, w.address, w.value);
-    // The blend scales a matrix the tick's does not (growing to a scale of 1,
-    // which drops the flag): the flag goes with it.
-    uint32_t type = 0;
-    if (!(t.current_type & kScaleFlag) && (w.value[3] != 1.0f || w.value[7] != 1.0f || w.value[11] != 1.0f) &&
-        Read32(base, w.address + kTypeOffset, type) && type == t.current_type) {
-      w.type_written = true;
-      w.type_live = type;
-      w.type_value = type | kScaleFlag;
-      Put32(base, w.address + kTypeOffset, w.type_value);
-    }
     written.push_back(w);
     object_written.insert(w.address);
     ++applied.objects;
@@ -713,9 +701,6 @@ void CameraEntry(uint8_t* base, uint32_t entry) {
 void Restore(uint8_t* base) {
   const bool counting = collecting;
   for (const auto& w : written) {
-    uint32_t type = 0;
-    if (w.type_written && Read32(base, w.address + kTypeOffset, type) && type == w.type_value)
-      Put32(base, w.address + kTypeOffset, w.type_live);
     if (PutBack(base, w)) continue;
     ++counts.changed;
     Matrix now;

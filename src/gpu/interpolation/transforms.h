@@ -24,10 +24,12 @@
 // (821549A8) does, so the render thread does not read them.
 //
 // An engine matrix has a type word at +64; with its scale flag the fourth
-// column scales the rows, and without it the column blends as a scale of 1
-// (when the blend scales a matrix whose tick does not, the flag is written
-// with it and comes back too). The display may turn some matrices in place
-// (billboards: in Rise the indicators over the characters), so the write does
+// column scales the rows. The column is blended as the two ticks hold it,
+// flag or not: Broken Bond reads it even without the flag (the light
+// direction of a character's materials came out tilted when a scale of 1 was
+// forced into it, flickering at 60 fps), and a matrix whose flag changed
+// between the ticks stays at the tick. The display may turn some matrices in
+// place (billboards: in Rise the indicators over the characters), so the write does
 // not come back; the logic of the next tick reads them. Where the view block
 // only turned a written matrix, the tick's scale and position go back under
 // the turn, and a frame without a tick writes the interpolated value under it
