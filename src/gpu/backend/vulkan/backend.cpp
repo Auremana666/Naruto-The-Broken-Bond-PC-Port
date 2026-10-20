@@ -1543,22 +1543,32 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fence, std
     // The average of the samples into the whole destination (same size, no rectangle).
     Transition(commands, source.Image(), source.Aspect(), source.state, kCopySource);
     Transition(commands, dest.Image(), VK_IMAGE_ASPECT_COLOR_BIT, dest.state, kCopyDest, true);
-    VkImageResolve region{};
-    region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.extent = {dest.width, dest.height, 1};
+    // With the half-pixel offset gap (regions.h) filled.
+    std::vector<VkImageResolve> regions;
+    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, {0, 0, dest.width, dest.height}, 0, 0)) {
+      VkImageResolve& region = regions.emplace_back();
+      region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.srcOffset = {int32_t(g.source.left), int32_t(g.source.top), 0};
+      region.dstOffset = {int32_t(g.dest_x), int32_t(g.dest_y), 0};
+      region.extent = {g.source.right - g.source.left, g.source.bottom - g.source.top, 1};
+    }
     vkCmdResolveImage(commands, source.Image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dest.Image(),
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
     method = "resolve-image";
   } else {
     Transition(commands, source.Image(), source.Aspect(), source.state, kCopySource);
     Transition(commands, dest.Image(), VK_IMAGE_ASPECT_COLOR_BIT, dest.state, kCopyDest);
-    VkImageCopy region{};
-    region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.srcOffset = {int32_t(box.left), int32_t(box.top), 0};
-    region.dstOffset = {int32_t(host.dest_x), int32_t(host.dest_y), 0};
-    region.extent = {box.right - box.left, box.bottom - box.top, 1};
+    // With the half-pixel offset gap (regions.h) filled.
+    std::vector<VkImageCopy> regions;
+    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, box, host.dest_x, host.dest_y)) {
+      VkImageCopy& region = regions.emplace_back();
+      region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.srcOffset = {int32_t(g.source.left), int32_t(g.source.top), 0};
+      region.dstOffset = {int32_t(g.dest_x), int32_t(g.dest_y), 0};
+      region.extent = {g.source.right - g.source.left, g.source.bottom - g.source.top, 1};
+    }
     vkCmdCopyImage(commands, source.Image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dest.Image(),
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
   }
   source.last_use = dest.last_use = state_->batch.sequence;
   dest.content_defined = true;

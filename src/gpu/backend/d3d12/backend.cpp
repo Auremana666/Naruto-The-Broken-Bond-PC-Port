@@ -2320,7 +2320,18 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fenceValue
   } else if (source.desc.samples > 1 && same_size && !request.has_rect) {
     barrier(src, source.state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
     barrier(dst, dest.state, D3D12_RESOURCE_STATE_RESOLVE_DEST);
-    commands->ResolveSubresource(dst, 0, src, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+    // With the half-pixel offset gap (regions.h) to fill, by regions.
+    const auto copies = ResolveCopies(state_->render_mode.scale, {0, 0, dest.width, dest.height}, 0, 0);
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> regions;
+    if (copies.size() > 1 && SUCCEEDED(commands->QueryInterface(IID_PPV_ARGS(&regions)))) {
+      for (const GapCopy& g : copies) {
+        D3D12_RECT rect{LONG(g.source.left), LONG(g.source.top), LONG(g.source.right), LONG(g.source.bottom)};
+        regions->ResolveSubresourceRegion(dst, 0, g.dest_x, g.dest_y, src, 0, &rect, DXGI_FORMAT_R8G8B8A8_UNORM,
+                                          D3D12_RESOLVE_MODE_AVERAGE);
+      }
+    } else {
+      commands->ResolveSubresource(dst, 0, src, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+    }
     method = "resolve-subresource";
   } else if (source.desc.samples == 1) {
     barrier(src, source.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -2328,11 +2339,14 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fenceValue
     HostBox region;
     if (!CopyBox(host, request.has_rect, source.desc.width, source.desc.height, dest.width, dest.height, region))
       return fail("native-resolve-empty-region");
-    const D3D12_BOX box{region.left, region.top, 0, region.right, region.bottom, 1};
     D3D12_TEXTURE_COPY_LOCATION to{}, from{};
     to.pResource = dst; to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     from.pResource = src; from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    commands->CopyTextureRegion(&to, host.dest_x, host.dest_y, 0, &from, &box);
+    // With the half-pixel offset gap (regions.h) filled.
+    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, region, host.dest_x, host.dest_y)) {
+      const D3D12_BOX box{g.source.left, g.source.top, 0, g.source.right, g.source.bottom, 1};
+      commands->CopyTextureRegion(&to, g.dest_x, g.dest_y, 0, &from, &box);
+    }
   } else {
     return fail("native-resolve-msaa-region-uncovered");  // Refused above, kept as a backstop.
   }

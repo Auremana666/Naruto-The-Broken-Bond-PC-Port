@@ -4,7 +4,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <vector>
 #include "gpu/backend/contracts.h"
 
 namespace gpu {
@@ -67,6 +69,40 @@ inline bool CopyBox(const HostResolve& resolve, bool has_rect, uint32_t source_w
   box.right = std::min(box.right, box.left + dest_width - std::min(resolve.dest_x, dest_width));
   box.bottom = std::min(box.bottom, box.top + dest_height - std::min(resolve.dest_y, dest_height));
   return box.right > box.left && box.bottom > box.top;
+}
+
+// The half-pixel offset gap of a scaled resolve. The title draws with the
+// D3D9 pixel center (PA_SU_VTX_CNTL.pix_center, guarded in draw.cpp), so
+// g_HalfPixelOffset moves its geometry by half a guest pixel: a quad that
+// starts on the guest edge 0 leaves the first host columns and rows uncovered
+// above 1x (one at 2x), and what was drawn before shows through at the left
+// and top of the image (fades and overlays). As the SDK's resolve with
+// resolve_resolution_scale_fill_half_pixel_offset, those columns and rows of
+// the resolved rectangle repeat the first surely covered one: (k + 1) / 2 at
+// an integer scale, the pixels whose centers lie before k / 2 at a fraction.
+inline uint32_t HalfPixelGap(float k) { return k > 1.0f ? uint32_t(std::ceil(k * 0.5f - 0.5f + 1e-4f)) : 0; }
+
+// The copies of the resolve of box to (dest_x, dest_y), with that gap filled:
+// the covered part, the gap rows from the first covered row, the gap columns
+// from the first covered column, the corner from the first covered pixel. No
+// copy reads a gap pixel and no two write the same texel, so they need no
+// order. One copy of the whole box at 1x or when the box is not larger than
+// its gap.
+struct GapCopy {
+  HostBox source;
+  uint32_t dest_x = 0, dest_y = 0;
+};
+inline std::vector<GapCopy> ResolveCopies(const ResolutionScale& k, const HostBox& box, uint32_t dest_x,
+                                          uint32_t dest_y) {
+  const uint32_t gx = HalfPixelGap(k.x), gy = HalfPixelGap(k.y);
+  if ((!gx && !gy) || box.right - box.left <= gx || box.bottom - box.top <= gy) return {{box, dest_x, dest_y}};
+  const uint32_t x = box.left + gx, y = box.top + gy;
+  std::vector<GapCopy> copies{{{x, y, box.right, box.bottom}, dest_x + gx, dest_y + gy}};
+  for (uint32_t i = 0; i < gy; ++i) copies.push_back({{x, y, box.right, y + 1}, dest_x + gx, dest_y + i});
+  for (uint32_t j = 0; j < gx; ++j) copies.push_back({{x, y, x + 1, box.bottom}, dest_x + j, dest_y + gy});
+  for (uint32_t i = 0; i < gy; ++i)
+    for (uint32_t j = 0; j < gx; ++j) copies.push_back({{x, y, x + 1, y + 1}, dest_x + j, dest_y + i});
+  return copies;
 }
 
 }  // namespace gpu
