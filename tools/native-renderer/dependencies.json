@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "status": "isolated-host-build-contract-not-runtime-validation",
+  "plume": {
+    "url": "https://github.com/renderbag/plume.git",
+    "revision": "d72379344dacd3dbf9f810f92ddc87e6de1845b1",
+    "allocator_url": "https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator",
+    "allocator_revision": "9ef66bc14edd10dee0de3a545b98578363552f66",
+    "cmake_variable": "NATIVE_RENDERER_PLUME_SOURCE",
+    "vulkan_submodules": {
+      "contrib/volk": "be3dbd49bf77052665e96b6c7484af855e7e5f67",
+      "contrib/Vulkan-Headers": "2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350",
+      "contrib/VulkanMemoryAllocator": "29b35ea4232688c0f42cdff0c10848290760a417"
+    }
+  },
+  "isolated_backend": {
+    "platform": "Windows x64 with Windows SDK D3D12 libraries",
+    "fmt_source_variable": "NATIVE_RENDERER_FMT_SOURCE",
+    "fmt_revision_reference": "xenosrecomp_thirdparty.fmt.revision",
+    "sdk_required_for_standalone_build": false,
+    "shader_translator_required": false
+  },
+  "xenosrecomp_upstream": {
+    "url": "https://github.com/hedge-dev/XenosRecomp",
+    "revision": "990d03b28a27b50277ee5d8d942e1c5f873869d1",
+    "note": "Imported fork sources are identified separately by import-manifest.json."
+  },
+  "xenosrecomp_thirdparty": {
+    "fmt": {"url": "https://github.com/fmtlib/fmt.git", "revision": "873670ba3f9e7bc77ec2c1c94b04f1f8bef77e9f"},
+    "dxc-bin": {"url": "https://github.com/renderbag/dxc-bin.git", "revision": "737ac9f51c3d06f0cd1ee7e14dc065bafd52310d"},
+    "smol-v": {"url": "https://github.com/aras-p/smol-v", "revision": "9dd54c379ac29fa148cb1b829bb939ba7381d8f4"},
+    "xxHash": {"url": "https://github.com/Cyan4973/xxHash.git", "revision": "2bf8313b934633b2a5b7e8fd239645b85e10c852"},
+    "zstd": {"url": "https://github.com/facebook/zstd.git", "revision": "f7a8bb1263448e5028aceeba606a08fe3809550f"}
+  }
+}

@@ -1,0 +1,4 @@
+// The executable's icon, shared with the launcher: Windows shows the first
+// icon resource in the taskbar and the title bar (SDL takes it for the window
+// class), and Explorer shows it on the file.
+1 ICON "@CMAKE_CURRENT_SOURCE_DIR@/launcher/assets/favicon.ico"

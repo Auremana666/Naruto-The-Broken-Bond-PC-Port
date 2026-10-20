@@ -1,0 +1,12 @@
+# Shared character-classification tail reached by the wrappers at
+# 0x82224388 and 0x82224390. Keep its bounds together so both conditional
+# branches can reach the zero-result block at 0x82225A70.
+[functions."0x82225A40"]
+end = 0x82225A78
+
+# The search loop and its vector-output blocks form one leaf function.
+# Its successful-search branch reaches 0x8275463C, whose null checks return
+# through the fallback block at 0x82754624. The final blr is at 0x827546A0;
+# the following word is padding.
+[functions."0x827545F0"]
+end = 0x827546A4

@@ -1,0 +1,3 @@
+#include "@CMAKE_CURRENT_SOURCE_DIR@/src/resource.h"
+
+IDI_LAUNCHER ICON "@CMAKE_CURRENT_SOURCE_DIR@/assets/favicon.ico"

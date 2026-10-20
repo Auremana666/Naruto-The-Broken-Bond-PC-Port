@@ -1,0 +1,32 @@
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -3883,6 +3883,15 @@ namespace plume {
+             featuresChain = &portabilityFeatures;
+         }
+ 
++        // Timeline semaphores, core in Vulkan 1.2: enabled when the device supports them.
++        VkPhysicalDeviceTimelineSemaphoreFeatures timelineSemaphoreFeatures = {};
++        const bool timelineSemaphoreFound = physicalDeviceProperties.apiVersion >= VK_API_VERSION_1_2;
++        if (timelineSemaphoreFound) {
++            timelineSemaphoreFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
++            timelineSemaphoreFeatures.pNext = featuresChain;
++            featuresChain = &timelineSemaphoreFeatures;
++        }
++
+         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures = {};
+         VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = {};
+         const bool rayTracingFound = (supportedOptionalExtensions.find(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) != supportedOptionalExtensions.end()) && (supportedOptionalExtensions.find(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) != supportedOptionalExtensions.end());
+@@ -3964,6 +3973,12 @@ namespace plume {
+             bufferDeviceAddressFeatures.pNext = createDeviceChain;
+             createDeviceChain = &bufferDeviceAddressFeatures;
+         }
++
++        const bool timelineSemaphoreSupported = timelineSemaphoreFeatures.timelineSemaphore;
++        if (timelineSemaphoreSupported) {
++            timelineSemaphoreFeatures.pNext = createDeviceChain;
++            createDeviceChain = &timelineSemaphoreFeatures;
++        }
+         
+         if (portabilityFound) {
+             portabilityFeatures.pNext = createDeviceChain;
