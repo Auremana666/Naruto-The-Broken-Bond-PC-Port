@@ -20,7 +20,7 @@ Xbox 360 files + manifest + codegen config
        Launcher → game execution
 ```
 
-PowerPC code is translated ahead of time into C++. The ReXGlue runtime provides the services the original game needs, including guest memory, kernel, content, audio, input, and Xenos GPU support. The game draws through one of two renderers, chosen at launch: the SDK's Xenos GPU emulation (with its Direct3D 12 backend), the default, or the native renderer in `src/gpu/`, an optional build that draws the game's Direct3D calls with Direct3D 12 through Plume. The launcher has its own Direct3D 11 window.
+PowerPC code is translated ahead of time into C++. The ReXGlue runtime provides the services the original game needs, including guest memory, kernel, content, audio, and input. The game draws with the native renderer in `src/gpu/`, which issues the game's Direct3D calls with Direct3D 12 through Plume. The launcher has its own Direct3D 11 window.
 
 ## Structure
 
@@ -66,7 +66,7 @@ The XMA decoder patch ports fixes from Xenia Canary (the work loop's exit when i
 
 ## Native renderer
 
-The native renderer replaces the Xenos plugin at launch when `renderer = "native"`. It hooks the game's Direct3D layer instead of executing its GPU command buffers. It comes from the Rise of a Ninja port, rewritten to this game's addresses and device offsets, with the differences of this game handled in its own code. User-facing behavior and known issues are in [Renderers](renderers.md).
+The native renderer hooks the game's Direct3D layer instead of emulating the Xbox 360 GPU from its command buffers. It comes from the Rise of a Ninja port, rewritten to this game's addresses and device offsets, with the differences of this game handled in its own code. User-facing behavior and known issues are in [Renderers](renderers.md).
 
 | Path | Responsibility |
 | --- | --- |
@@ -96,12 +96,12 @@ The shader cache is generated at build time from the local `xeshader.sdb` by `to
 
 ## Launcher
 
-The launcher comes from the Rise of a Ninja port's, with this game's name, files, and branding. It saves `broken_bond.toml` next to itself and starts `broken_bond.exe` from its folder, after checking `default.xex` against the supported SHA-256. It has no installer, ISO extraction, or DLC management; `scripts/extract-game.ps1` extracts the game.
+The launcher comes from the Rise of a Ninja port's, with this game's name, files, and branding. It saves `broken_bond.toml` next to itself and starts `broken_bond.exe` from its folder, after checking `default.xex` against the supported SHA-256. ISO import belongs to the separate [Inno Setup installer](../packaging/README.md); the launcher selects extracted folders and has no DLC management. `scripts/extract-game.ps1` remains available for source builds.
 
 ## Areas to address
 
-1. **Native renderer validation.** It has been played through the start of the story and the open world on one graphics card. Xenos stays the default until it has been checked across the whole game, against Xenos, and on other cards.
-2. **Native renderer in the launcher.** The launcher starts the Xenos-only build and has no renderer choice or native options.
+1. **Native renderer validation.** It has been played through the start of the story, Fight Mode and the open world on one graphics card, at 30 and 60 fps; broader gameplay and graphics-card coverage still require validation.
+2. **Native launcher compatibility.** Test new options against the matching game build.
 3. **External dependencies.** Plume and XenosRecomp's dependencies are checkouts pinned by commit outside the submodules, and the build checks the commits of Plume and its allocator only.
 4. **Pipeline list.** It is generated from local play sessions and stays out of Git, so a clean clone builds without it.
 5. **One game revision.** Code generation and the native renderer's hooks use addresses of one executable revision; other revisions are refused.

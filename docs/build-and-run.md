@@ -79,30 +79,19 @@ The script applies the patches in `patches/` to the `sdk` submodule, builds the 
 
 Rebuild the SDK with this script after changing any patch.
 
-## 5. Generate the C++ and build the game
+## 5. Generate the C++
 
 ```powershell
 ./scripts/build-game.ps1
 ```
 
-The script verifies `default.xex`, runs the ReXGlue code generation on `broken_bond_manifest.toml` (output in `generated/`, ignored by Git), configures the `windows-release` preset, and builds the game and the launcher in `build/game`.
+The script verifies `default.xex` and runs the ReXGlue code generation on `broken_bond_manifest.toml` (output in `generated/`, ignored by Git). The game itself is built in the next step.
 
 Code generation runs again when the installed SDK changes, even if its version string does not, because the local patches can change the generated code. Use `-Regenerate` to force it, `-Jobs` to limit parallelism, and `-SdkPrefix` to use another installed SDK.
 
-Main files in `build/game/`:
+## 6. Native renderer
 
-```text
-broken_bond.exe            # the game, with the Xenos renderer
-broken_bond_launcher.exe
-broken_bond.toml           # written by the launcher
-rexruntime.dll
-rexgpu-xenos.dll
-assets/                    # launcher artwork and fonts
-```
-
-## 6. Native renderer (optional)
-
-The [native renderer](renderers.md) is built into a separate directory, `build/native`, so `build/game` keeps the Xenos-only executable. The native executable also carries Xenos, and the renderer is chosen at launch. Build the game once with `build-game.ps1` first; the native build reuses its generated code.
+The game, with its [native renderer](renderers.md) and launcher, is built into `build/native`. It reuses the code generated in the previous step.
 
 It needs:
 
@@ -122,35 +111,10 @@ foreach ($name in 'fmt', 'dxc-bin', 'smol-v', 'xxHash', 'zstd') {
   git -C "tools/xenosrecomp/thirdparty/$name" checkout $deps.$name.revision
 }
 
-./scripts/build-game-native.ps1 -PlumeSource out/plume -XenosRecompThirdparty tools/xenosrecomp/thirdparty
+./scripts/build-game-native.ps1 -PlumeSource out/plume -XenosRecompThirdparty tools/xenosrecomp/thirdparty -Backend d3d12
 ```
 
 The build translates the game's shaders with the XenosRecomp fork in `tools/xenosrecomp/`, compiles them with DXC, and embeds the result in `broken_bond.exe`, so no shader compiler runs during play. The first build translates every shader of `xeshader.sdb` and takes several minutes; `build/shader-store` keeps the results, and later builds reuse them while the game files, the fork, and DXC do not change. The shader cache derives from your game files and stays out of Git.
-
-### Native Vulkan
-
-To include Vulkan alongside native Direct3D 12, initialize Plume's pinned Vulkan
-dependencies and supply `spirv-val` from a Vulkan SDK or SPIRV-Tools build:
-
-```powershell
-git -C out/plume submodule update --init contrib/volk contrib/Vulkan-Headers contrib/VulkanMemoryAllocator
-./scripts/build-game-native.ps1 -PlumeSource out/plume `
-  -XenosRecompThirdparty tools/xenosrecomp/thirdparty -Backend both `
-  -SpirvVal C:/VulkanSDK/<version>/Bin/spirv-val.exe -Tests
-./scripts/run-game.ps1 -Renderer native -NativeBackend vulkan
-```
-
-`-Backend vulkan` builds only the Vulkan native backend; `-Backend d3d12` is the
-build default. Both retain the Xenos plugin and `renderer = "xenos"` as the
-runtime default. Native API selection is independent of the SDK's Xenos backend.
-An unavailable native backend fails explicitly instead of silently switching APIs.
-
-The Vulkan build compiles and validates SPIR-V from Broken Bond's own shader
-database and embeds it with the renderer's host passes. `-Tests` builds and runs
-the host resource, submission, failure, shader package, draw, instancing and
-presentation checks. These tests do not execute the game. Their journals stay
-under `build/native/backend-test-results/`; each CTest invocation creates new
-paths.
 
 ### Pipeline list
 
@@ -160,7 +124,7 @@ Every native run started by `run-game.ps1` leaves the pipelines it created in `b
 
 ```powershell
 ./scripts/update-pipeline-cache.ps1
-./scripts/build-game-native.ps1 -PlumeSource out/plume -XenosRecompThirdparty tools/xenosrecomp/thirdparty
+./scripts/build-game-native.ps1 -PlumeSource out/plume -XenosRecompThirdparty tools/xenosrecomp/thirdparty -Backend d3d12
 ```
 
 The script starts from the current list, so its entries and order are kept. `-Sources` builds the list from the given files only.
@@ -170,35 +134,32 @@ The script starts from the current list, so its entries and order are kept. `-So
 ### With the launcher
 
 ```powershell
-./build/game/broken_bond_launcher.exe
+./build/native/broken_bond_launcher.exe
 ```
 
-The launcher finds the repository's `game/` folder, or a folder selected under **Game Files**. **Play Game** verifies `default.xex`, saves settings, and starts the adjacent `broken_bond.exe`. Xenos is the default. The matching launcher in `build/native/` also offers Native and its settings. Both share `build/user/`. See [Configuration](configuration.md) and [launcher parity](../launcher/README.md).
+The launcher finds the repository's `game/` folder, or a folder selected under **Game Files**. **Play Game** verifies `default.xex`, saves settings, and starts the adjacent `broken_bond.exe`. Saves and caches use `build/user/`. See [Configuration](configuration.md) and [launcher parity](../launcher/README.md).
 
 To build only the launcher and run its regression tests, without generating the game code again:
 
 ```powershell
 ./scripts/build-launcher.ps1 -Test
-./scripts/build-launcher.ps1 -NativeRenderer -Test  # matching build/native launcher
 ```
 
 ### From the repository
 
 ```powershell
-./scripts/run-game.ps1                    # Xenos
+./scripts/run-game.ps1                    # the build of build-game-native.ps1
 ./scripts/run-game.ps1 -Keyboard          # with the SDK's keyboard controller emulation
-./scripts/run-game.ps1 -Renderer native   # the build of build-game-native.ps1
 ```
 
-The script uses `game/` for the game files and `build/user/` for saves and caches, and writes the log to `build/logs/runtime-<date>.log`. `-LogLevel debug` or `trace` adds detail. With `-Renderer native`, it also writes the renderer's journal next to the log (`.native.jsonl`) and the run's pipelines to `build/pipeline-runs/<run>/`.
+The script uses `game/` for the game files and `build/user/` for saves and caches, and writes the log to `build/logs/runtime-<date>.log`. `-LogLevel debug` or `trace` adds detail. It also writes the renderer's journal next to the log (`.native.jsonl`) and the run's pipelines to `build/pipeline-runs/<run>/`.
 
 Keyboard defaults include Enter for Start, Space for A, Backspace for B, and WASD for the left stick.
 
 ### Directly
 
 ```powershell
-./build/game/broken_bond.exe --game_data_root="C:/path/to/game"
-./build/native/broken_bond.exe --game_data_root="C:/path/to/game" --renderer native
+./build/native/broken_bond.exe --game_data_root="C:/path/to/game"
 ```
 
 Without `--user_data_root`, the SDK keeps saves and caches in its default user folder instead of `build/user/`.

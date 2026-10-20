@@ -6,7 +6,7 @@
 
 <p align="center">
   A static recompilation for PC powered by ReXGlue<br>
-  <strong>Xenos and native Direct3D 12 renderers • Windows launcher • Streamed audio fixes</strong>
+  <strong>Native Direct3D 12 renderer • Windows launcher • Streamed audio fixes</strong>
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 
 A PC port of **Naruto: The Broken Bond**, released by Ubisoft for Xbox 360 in 2008. The project uses the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) to translate the game's PowerPC code into C++ and compile it for native execution. The SDK runtime provides system services, audio, and input.
 
-The game can be drawn by two renderers: **Xenos**, the SDK's emulation of the Xbox 360 GPU and the default, and the **native renderer**, an optional build that draws the game's Direct3D calls with Direct3D 12. The native renderer comes from the [Naruto: Rise of a Ninja recomp](https://github.com/jorjbarbosa/naruto-rise-recomp), the first game's port, adapted to this game's code.
+This version ships the native **Direct3D 12** renderer in the launcher, installer and portable package. The native renderer is adapted from the [Naruto: Rise of a Ninja recomp](https://github.com/jorjbarbosa/naruto-rise-recomp).
 
 The build and run workflow targets **Windows x64**.
 
@@ -33,17 +33,17 @@ The build and run workflow targets **Windows x64**.
 
 ## Current state
 
-The port has been played on Windows 11 with an AMD Radeon RX 9070 XT and a DualSense controller: the menus, the start of Story Mode with its first fights and cutscenes, and the open world, in sessions of about 20 minutes, with English and Japanese voices. The native renderer has been played through the same content without missing draws.
+The port has been played on Windows 11 with an AMD Radeon RX 9070 XT and a DualSense controller: the menus, the start of Story Mode with its first fights and cutscenes, Fight Mode, and the open world, in sessions of up to about 30 minutes, with English and Japanese voices, at the game's 30 fps and at 60 fps, without missing draws.
 
-Fight Mode, the Xbox Live features, and most of the story have not been tested yet. Other graphics cards, drivers, and game revisions have not been tested either.
+The Xbox Live features and most of the story have not been tested yet. Other graphics cards, drivers, and game revisions have not been tested either.
 
 ## Features
 
 **Graphics**
 
-- **Two renderers:** Xenos (default) and the native Direct3D 12 renderer, an optional build. See [Renderers](#renderers).
+- **Native Direct3D 12 renderer:** the game's Direct3D calls run on Direct3D 12, with the shaders translated when the port is built. See [Renderers](#renderers).
 - **Internal resolution from 1× to 4×**, up to 16× anisotropic filtering, FXAA, FidelityFX CAS or FSR, fullscreen, and VSync.
-- **Native renderer options:** MSAA (2×, 4×, 8×), transparency antialiasing, fractional internal resolution (such as 1.5×), brightness, frame latency, triple buffering, and graphics card selection.
+- **Native renderer options:** frame rates above the game's own (the frames between its logic steps are interpolated), MSAA (2×, 4×, 8×), transparency antialiasing, fractional internal resolution (such as 1.5×), brightness, frame latency, triple buffering, and graphics card selection.
 
 **Audio**
 
@@ -52,24 +52,20 @@ Fight Mode, the Xbox Live features, and most of the story have not been tested y
 **Launcher and recompilation**
 
 - **Launcher** reused from the current Rise of a Ninja port, with the same settings layout, graphics card selection, keyboard and mouse mapping, seven interface languages, and game-folder verification, without DLC. See [launcher features and remaining gaps](launcher/README.md).
+- **Windows installer** based on Rise's Inno Setup flow, with optional ISO import, supported-revision verification, updates and preservation of user data. See [packaging and installer](packaging/README.md).
 - **Automatic function discovery:** a ReXGlue patch finds the functions the game reaches only through pointer tables or addresses built in code, so the port needs no hand-written function list. See [Automatic function discovery](docs/automatic-function-discovery.md).
 
 ## Renderers
 
-| | Xenos (default) | Native (optional build) |
-| --- | --- | --- |
-| How it draws | Emulates the Xbox 360 GPU and the command buffers the game writes for it | Intercepts the game's Direct3D calls and issues them with Direct3D 12 |
-| Shaders | Translated the first time they appear, cached per user | Translated when the port is built and embedded in the executable |
-| Frame rate | The game's own | The game's own, shown in the window title |
-| Options only in this renderer | Dithering | MSAA, transparency antialiasing, fractional resolution, brightness, frame latency, triple buffering, graphics card |
-| How to select it | The launcher and `scripts/run-game.ps1` use it by default | `scripts/run-game.ps1 -Renderer native`, or `renderer = "native"` |
-
-Xenos stays the default until the native renderer has been checked across the whole game. See [Renderers](docs/renderers.md) for how they differ and their known issues.
+The game draws with the native Direct3D 12 renderer: it intercepts the game's
+Direct3D calls and issues them with Direct3D 12, with the shaders translated
+at build time and embedded in the executable. See [Renderers](docs/renderers.md)
+for the frame rate option, validation limits and known issues.
 
 ## Requirements
 
 - Windows x64.
-- A Direct3D 12-compatible GPU, for either renderer. The launcher uses Direct3D 11.
+- A GPU supporting Direct3D 12. The launcher uses Direct3D 11.
 - The files from your Xbox 360 copy of the game, in the supported revision below. The source tree does not include game data.
 - The build tools listed in the [build guide](docs/build-and-run.md#1-prerequisites).
 - An SDL-compatible controller is recommended. The SDK's keyboard emulation is also available.
@@ -91,8 +87,11 @@ From a checkout, in PowerShell 7 with the Visual Studio C++ tools installed:
 git -c core.symlinks=true submodule update --init --recursive
 ./scripts/extract-game.ps1          # extracts your ISO into game/
 ./scripts/build-sdk.ps1             # builds and installs the patched SDK
-./scripts/build-game.ps1            # generates the C++ and builds the game and launcher
-./build/game/broken_bond_launcher.exe
+./scripts/build-game.ps1            # generates the C++ code
+# Prepare pinned native dependencies as described in the build guide, then:
+./scripts/build-game-native.ps1 -PlumeSource out/plume `
+  -XenosRecompThirdparty tools/xenosrecomp/thirdparty -Backend d3d12
+./build/native/broken_bond_launcher.exe
 ```
 
 The [build guide](docs/build-and-run.md) explains each step, the native renderer build, and running the game without the launcher.
@@ -103,7 +102,7 @@ The [build guide](docs/build-and-run.md) explains each step, the native renderer
 | --- | --- |
 | [Build and run](docs/build-and-run.md) | Toolchain, SDK, game files, code generation, the native renderer, and running |
 | [Configuration](docs/configuration.md) | Launcher settings, the configuration file, renderer options, and user files |
-| [Renderers](docs/renderers.md) | Xenos and the native renderer, the pipeline list, and known issues |
+| [Renderers](docs/renderers.md) | The native renderer, the frame rate, the pipeline list, and known issues |
 | [Architecture](docs/architecture.md) | Project structure, SDK patches, and areas to address |
 | [Troubleshooting](docs/troubleshooting.md) | Build failures, runtime issues, and diagnostics |
 | [Recompilation notes](docs/recompilation-notes.md) | Executable identity, function boundaries, and validation evidence |
@@ -113,13 +112,13 @@ The [build guide](docs/build-and-run.md) explains each step, the native renderer
 
 Planned work, in no particular order:
 
-- **Native renderer as the default,** once it has been checked across the whole game against Xenos.
-- **Frame rates above 30 with the native renderer,** drawing the frames between the game's logic steps as the Rise of a Ninja port does. Not started.
+- **Broader native renderer validation,** across the whole game and on other graphics cards.
+- **Frame rates above 60,** which `frame_rate` accepts but have not been played yet.
 - **A wider pipeline list,** built from more of the game, so fewer pipelines compile the first time an area appears.
 
 ## Contributing
 
-Read the [architecture notes](docs/architecture.md) before changing the runtime or code generation files. When reporting an issue, include reproduction steps, the commit you built, CPU, GPU, driver, the renderer you use, your configuration, and the log of the run (`build/logs/` with `run-game.ps1`, `build/game/logs/` with the launcher).
+Read the [architecture notes](docs/architecture.md) before changing the runtime or code generation files. When reporting an issue, include reproduction steps, the commit you built, CPU, GPU, driver, the renderer you use, your configuration, and the log of the run (`build/logs/` with `run-game.ps1`, `build/native/logs/` with the launcher).
 
 Work happens on the `develop` branch; `main` is the primary branch. Keep game files, derived shader data, pipeline lists, and generated code out of commits. SDK changes go into reproducible patches in `patches/`. Code, comments, documentation, and commit messages are written in English, as [AGENTS.md](AGENTS.md) requires.
 

@@ -4,7 +4,7 @@
 
 ## Where to configure settings
 
-Use the launcher whenever possible. It reads and saves `broken_bond.toml` **next to its executable** (`build/game/broken_bond.toml` in a repository build) when you play or close it. The game reads the same file when it starts from that folder, also without the launcher. Close both the game and the launcher before editing the file by hand.
+Use the launcher whenever possible. It reads and saves `broken_bond.toml` **next to its executable** (`build/native/broken_bond.toml` in a repository build) when you play or close it. The game reads the same file when it starts from that folder, also without the launcher. Close both the game and the launcher before editing the file by hand.
 
 The native executable and matching launcher live in `build/native/` and read `build/native/broken_bond.toml`. Build that launcher with `scripts/build-launcher.ps1 -NativeRenderer`, or together with the game using `scripts/build-game-native.ps1`.
 
@@ -19,10 +19,10 @@ The interface matches the current Rise launcher, with its DLC tab removed. The l
 | Group | Options |
 | --- | --- |
 | Game | Game language and Ubisoft boot-logo skip |
-| Display | Graphics card, resolution, fullscreen, VSync; renderer selection, brightness, and frame rate in native builds. Ultrawide remains visible but disabled pending validation |
-| Quality | Texture filtering, FXAA, post-processing, dithering; MSAA and transparency AA in native builds |
+| Display | Graphics card, resolution, fullscreen, VSync, brightness and frame rate. Ultrawide remains visible but disabled pending validation |
+| Quality | Texture filtering, FXAA, post-processing, MSAA and transparency AA |
 | Controls | SDL/XInput, connected controller, keyboard and mouse mode, mouse camera, sensitivity, key mapping |
-| Advanced | FPS overlay on Xenos; frame latency and triple buffering on Native |
+| Advanced | Frame latency and triple buffering |
 
 **Map keys** opens the Rise mapping screen: 24 controller actions with two editable key or mouse-button alternatives each. Click a slot and press a key within five seconds; right-click clears it. Assigning an existing key moves it from the other action. F1, F3, F4, F7, and Backtick remain reserved. Mouse movement emulates the right stick; Rise's direct exploration-camera script hook has not been validated for Broken Bond. See the [feature ledger](launcher-game-features.md).
 
@@ -56,51 +56,25 @@ Defaults written by the launcher:
 | `anisotropic_override` | `5` | Texture filtering in the SDK's encoding: `-1` the game's, `0` off, `1` to `5` for 1× to 16×; `5` is 16× |
 | `swap_post_effect` | `"fxaa"` | `"none"`, `"fxaa"`, or `"fxaa_extreme"` for edge smoothing |
 | `present_effect` | `"cas"` | `"bilinear"`, `"cas"` (sharpen), or `"fsr"` (upscale) when presenting |
-| `present_dither` | `false` | Dithering when presenting (Xenos only) |
 | `fullscreen` | `true` | Fullscreen mode |
 | `vsync` | `true` | Synchronize presentation with the display |
 | `input_backend` | `"sdl"` | `"sdl"` for Xbox and PlayStation controllers through SDL, `"xinput"` for XInput only |
 | `mnk_mode` | `false` | Keyboard controller emulation; enables the mapping screen's bindings |
 | `mnk_mouse`, `mnk_sensitivity` | `true`, `1.0` | Mouse-to-right-stick camera and sensitivity (100%); active with `mnk_mode` |
 | `keybind_*` | Rise layout | Space = A, E/Backspace = B, mouse buttons = X/Y, WASD = left stick, Shift/Ctrl = triggers; editable in **Map keys** |
-| `graphics_device` | `""` | Graphics adapter name; empty keeps automatic selection on both renderers |
+| `graphics_device` | `""` | Graphics adapter name; empty keeps automatic selection |
 | `skip_intro_videos` | `true` | Skip only the Ubisoft boot logo; story and attract videos use their original open path |
-| `show_fps_overlay` | `false` | Show FPS and frame time on Xenos; F1 toggles it during play |
 | `launcher_language` | `"en"` | Interface language, independent of game language |
-| `gpu_plugin` | `"xenos"` | The SDK's GPU plugin |
 | `custom_game_root` | `""` | The game folder selected in **Game Files**; empty uses the detected one |
 
 Other SDK options can be added to the file by hand; the launcher keeps the keys it does not know when it saves. `log_level = "debug"` adds detail to the log.
 
 ## Renderer
 
-Builds with the native renderer (`scripts/build-game-native.ps1`, see [Build and run](build-and-run.md#6-native-renderer-optional)) carry both renderers in the same executable, chosen at launch:
-
-| Renderer | `renderer` |
-| --- | --- |
-| Xenos, the SDK's emulated Xbox 360 GPU (default) | `"xenos"` |
-| Native, the game's Direct3D calls drawn with Direct3D 12 or Vulkan | `"native"` |
-
-`scripts/run-game.ps1 -Renderer native` passes `--renderer native` for you. Builds without the native renderer ignore the key and always use Xenos. [Renderers](renderers.md) explains how the two differ.
-
-`native_backend = "d3d12"` or `"vulkan"` selects the native graphics API at the
-next launch. Direct3D 12 is the default when included; Vulkan is the default in
-a Vulkan-only native build. The renderer itself still defaults to Xenos.
-Use `scripts/run-game.ps1 -Renderer native -NativeBackend vulkan` to override the
-API for a run. The requested API must be included by
-[`build-game-native.ps1 -Backend`](build-and-run.md#native-vulkan).
-The matching launcher lists Xenos and each compiled native API, preserving
-Xenos as the default. Graphics cards are enumerated through the selected API.
-Vulkan currently uses a frame latency of one; its launcher field is read-only.
-
-### Options of each renderer
-
-| Option | Xenos | Native |
-| --- | --- | --- |
-| Resolution (`resolution_scale`) | 1× to 4× | 1× to 4×, or a fraction with `internal_resolution_scale` |
-| Texture filtering, FXAA, CAS/FSR, VSync, fullscreen | Yes | Yes |
-| Dithering (`present_dither`) | Yes | No |
-| The options below | No | Yes |
+The game draws with the native Direct3D 12 renderer: `renderer` is always
+`"native"` and `native_backend` is `"d3d12"`. Graphics cards are enumerated
+through Direct3D 12. The frame rate and frame time are reported in the game
+window title.
 
 ### Native renderer options
 
@@ -131,7 +105,7 @@ frame_rate = 60
 
 | Started with | Game files | Saves and caches | Logs |
 | --- | --- | --- | --- |
-| The launcher, in `build/game/` or `build/native/` | `game/`, or the folder selected in **Game Files** | `build/user/` | `logs/` beside the executable |
+| The launcher, in `build/native/` | `game/`, or the folder selected in **Game Files** | `build/user/` | `logs/` beside the executable |
 | `scripts/run-game.ps1` | `game/` | `build/user/` | `build/logs/runtime-<date>.log` |
 | The launcher copied elsewhere | A `game/` folder next to it, or the selected folder | A `user/` folder next to it | `logs/` next to it |
 

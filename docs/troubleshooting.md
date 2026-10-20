@@ -20,7 +20,7 @@
 
 | Symptom | What to check |
 | --- | --- |
-| `plume source must be clean at ...` or `allocator source must be clean at ...` | Check out the pinned commits in Plume and its `contrib/D3D12MemoryAllocator` submodule, without local changes; see [Build and run](build-and-run.md#6-native-renderer-optional) |
+| `plume source must be clean at ...` or `allocator source must be clean at ...` | Check out the pinned commits in Plume and its `contrib/D3D12MemoryAllocator` submodule, without local changes; see [Build and run](build-and-run.md#6-native-renderer) |
 | `The shader cache needs game/xeshader.sdb` | Extract the game files into `game/` first |
 | `The native renderer mapping only supports the documented Broken Bond executable` | Same as the revision check above |
 | Python not found during configuration | Install Python 3 and put it on `PATH` |
@@ -35,7 +35,7 @@ Select the folder that directly contains `default.xex` under **Game Files**. A f
 
 ### The launcher reports "PC port not found"
 
-The launcher starts `broken_bond.exe` from its own folder. Build the game with `scripts/build-game.ps1`, and keep the launcher in `build/game/` or next to a copy of the game executable and its DLLs.
+The launcher starts `broken_bond.exe` from its own folder. Build the game with `scripts/build-game-native.ps1`, and keep the launcher in `build/native/` or next to a copy of the game executable and its DLLs.
 
 ### The game closes at startup or during play
 
@@ -49,31 +49,24 @@ The launcher starts `broken_bond.exe` from its own folder. Build the game with `
 
 The SDK opens the Windows default playback device when the game starts. The log names it in the `audio endpoint` line. If sound plays on another device, such as a monitor's speakers, make the intended device the Windows default and start the game again.
 
-### Black frames with Xenos
-
-Add `execute_unclipped_draw_vs_on_cpu = true` to `broken_bond.toml`. The option makes the SDK run the vertex shader of unclipped draws on the CPU to estimate their extent. It does not apply to the native renderer, which has not shown these frames.
-
 ### The title screen looks different on each launch
 
-Expected: the game picks Konoha's time of day at random each time the title loads, on both renderers.
+Expected: the game picks Konoha's time of day at random each time the title loads.
 
 ### Native renderer
 
 | Symptom | What to check |
 | --- | --- |
-| The launcher has no renderer choice | Expected: start the native renderer with `run-game.ps1 -Renderer native`; see [Choosing the renderer](renderers.md#choosing-the-renderer) |
 | Short pauses in a new area | Pipelines compile the first time they appear on your driver; later visits do not pause. See [Pipelines](renderers.md#pipelines) |
-| A native option has no effect | Native options go in `build/native/broken_bond.toml`, not in the launcher's file; see [Native renderer options](configuration.md#native-renderer-options) |
+| A native option has no effect | The options are read at startup: close the game and the launcher, edit `build/native/broken_bond.toml`, and start again; see [Native renderer options](configuration.md#native-renderer-options) |
 | The game stops during startup with `REX_NATIVE_DIAGNOSTICS=1` | Known; leave the variable unset |
-
-When a problem appears only with the native renderer, check whether it also happens with Xenos, and mention the result in the report.
 
 ## Collecting diagnostics
 
 | Started with | Log |
 | --- | --- |
 | `scripts/run-game.ps1` | `build/logs/runtime-<date>.log`, and the native renderer's journal next to it (`.native.jsonl`) |
-| The launcher | `build/game/logs/` |
+| The launcher | `build/native/logs/` |
 
 For more detail, use `run-game.ps1 -LogLevel debug`, or set `log_level = "debug"` in `broken_bond.toml` and restore `"info"` afterwards.
 
