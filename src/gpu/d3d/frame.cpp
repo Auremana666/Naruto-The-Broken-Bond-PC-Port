@@ -28,6 +28,7 @@
 //     each frame fence when its lot completed on the own queue.
 
 #include "gpu/d3d/frame.h"
+#include "port_version.h"
 #include "gpu/diagnostics/diagnostics.h"
 #include "gpu/d3d/hooks.h"
 #include "gpu/d3d/device.h"
@@ -158,23 +159,38 @@ std::string LimiterSummary() {
                      "\"timer_failures\":{},\"period\":\"{}\"}}", l.interval, l.rate, l.paced, l.waited, l.late,
                      l.max_late_us, l.timer_failures, l.rate ? "1/rate s" : "interval/60 s");
 }
-// Frame-time meter in the window title: fps, mean
-// and max frame time of the last half second, measured between the ends of
-// consecutive own Swaps (after the limiter, the QPC of SwapLimiter), written
-// twice per second as "<title> | 30.0 fps | 33.3 ms (max 36.1)". Fire and
-// forget on the UI thread (CallInUIThreadDeferred, values captured by value);
-// the title is read there once. REX_NATIVE_FPS_TITLE=0 turns it off. Render
-// thread only; the image is untouched.
+// The window title: the port's name and version (port_version.h) in place of
+// the SDK's executable name and build stamp, set once at the first own Swap,
+// and the frame-time meter after it: fps, mean and max frame time of the last
+// half second, measured between the ends of consecutive own Swaps (after the
+// limiter, the QPC of SwapLimiter), written twice per second as
+// "<title> | 30.0 fps | 33.3 ms (max 36.1)". Fire and forget on the UI thread
+// (CallInUIThreadDeferred, values captured by value). REX_NATIVE_FPS_TITLE=0
+// leaves the meter out. Render thread only; the image is untouched.
 struct FrameMeter {
   int64_t last = 0, window_start = 0, sum = 0, max = 0;
   uint32_t frames = 0;
   int enabled = -1;
+  bool titled = false;
 } frame_meter;
+std::wstring BaseTitle() {
+  const std::string title = broken_bond::WindowTitle();
+  return std::wstring(title.begin(), title.end());
+}
 void MeterSwap() {
   auto& m = frame_meter;
   if (m.enabled < 0) {
     const char* text = std::getenv("REX_NATIVE_FPS_TITLE");
     m.enabled = text && std::string_view(text) == "0" ? 0 : 1;
+  }
+  if (!m.titled) {
+    HWND hwnd = DisplayHwnd();
+    auto* runtime = rex::Runtime::instance();
+    auto* app = runtime ? runtime->app_context() : nullptr;
+    if (hwnd && app) {
+      m.titled = true;
+      app->CallInUIThreadDeferred([hwnd] { SetWindowTextW(hwnd, BaseTitle().c_str()); });
+    }
   }
   const int64_t f = swap_limiter.frequency;
   if (!m.enabled || !f) return;
@@ -201,16 +217,8 @@ void MeterSwap() {
   if (!hwnd || !app) return;
   const std::string mode = gpu::tick::Label();  // REX_NATIVE_STATE_INTERPOLATION.
   app->CallInUIThreadDeferred([hwnd, fps, mean_ms, max_ms, mode] {
-    static std::wstring base_title;  // UI thread only.
-    static bool title_read = false;
-    if (!title_read) {
-      wchar_t buffer[256]{};
-      GetWindowTextW(hwnd, buffer, 256);
-      base_title = buffer;
-      title_read = true;
-    }
     wchar_t text[400]{};
-    swprintf_s(text, L"%s | %.1f fps | %.1f ms (max %.1f)", base_title.c_str(), fps, mean_ms, max_ms);
+    swprintf_s(text, L"%s | %.1f fps | %.1f ms (max %.1f)", BaseTitle().c_str(), fps, mean_ms, max_ms);
     if (!mode.empty()) {
       wcscat_s(text, L" | ");
       wcscat_s(text, std::wstring(mode.begin(), mode.end()).c_str());

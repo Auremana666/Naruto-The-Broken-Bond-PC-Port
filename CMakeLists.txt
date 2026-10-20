@@ -38,6 +38,8 @@ if(BROKENBOND_NATIVE_RENDERER)
         message(FATAL_ERROR "Enable at least one native backend")
     endif()
     list(APPEND BROKENBOND_SOURCES
+         # The version of the port, for the window title.
+         src/port_version.cpp
          # The host: configuration, guest kernel exports and the frame lifecycle.
          src/gpu/host/host.cpp src/gpu/host/kernel_video.cpp src/gpu/host/kernel_threading.cpp
          src/gpu/host/kernel_modules.cpp src/gpu/host/journal.cpp src/gpu/host/stop.cpp src/gpu/host/engines.cpp
@@ -115,6 +117,10 @@ if(BROKENBOND_NATIVE_RENDERER)
         set(native_shader_options SPIRV PASSES src/gpu/backend)
     endif()
     target_compile_definitions(broken_bond PRIVATE BROKENBOND_NATIVE_RENDERER_BOOTSTRAP=1)
+    # The version shown by the game and the launcher when no broken_bond.version
+    # file sits next to them (the packages write that file).
+    set(BROKENBOND_VERSION "dev" CACHE STRING "Port version")
+    target_compile_definitions(broken_bond PRIVATE BROKENBOND_VERSION="${BROKENBOND_VERSION}")
     # The shader cache generated from the local game files (game/xeshader.sdb).
     include(${CMAKE_CURRENT_SOURCE_DIR}/tools/native-renderer/shader-cache.cmake)
     brokenbond_shader_cache(broken_bond src/gpu/shaders/shader_cache_data.cpp ${native_shader_options})

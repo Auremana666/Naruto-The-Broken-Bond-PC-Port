@@ -15,9 +15,14 @@ or later. First configure/build the native port using
 
 ```powershell
 ./packaging/package-release.ps1
-# Set the numeric release version without editing the source:
+# Set the release version without editing the source:
 ./packaging/package-release.ps1 -Version 0.1.1
 ```
+
+The version is `major.minor.patch` with an optional pre-release suffix, such as
+`0.1.0-beta`; updates compare the numeric part only. The game and the launcher
+show it in their window title and under the cover, read from the packaged
+`broken_bond.version`.
 
 Packaging refreshes the game and launcher targets in `build/native`, builds the
 standalone setup helper, verifies the pinned extract-xiso archive, and checks

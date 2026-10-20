@@ -15,8 +15,9 @@ if (-not $Version) {
     if ($versionSource -notmatch '#define MyAppVersion "([^"]+)"') { throw 'Missing release version.' }
     $Version = $Matches[1]
 }
-# Numeric versions follow the update comparison inherited from Rise.
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a numeric major.minor.patch version.' }
+# major.minor.patch, with an optional pre-release suffix ("0.1.0-beta"); the
+# update comparison inherited from Rise reads the numeric part only.
+if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') { throw 'Use a major.minor.patch version, with an optional -suffix.' }
 if (-not $OutputRootDir) { $OutputRootDir = Join-Path $projectRoot 'dist' }
 $OutputRootDir = [IO.Path]::GetFullPath($OutputRootDir)
 if (-not $NoSetup) {
