@@ -5,6 +5,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 // Controller buttons the menu reads, as bits.
 enum PadBit : uint32_t {
@@ -43,3 +46,7 @@ bool ReadResource(int id, const void** data, size_t* size);
 
 // A Windows error box titled with the game's name.
 void ShowGameError(const char* text);
+
+// Graphics cards that can run the game, as (DXGI adapter index, name), in the order the SDK's
+// d3d12_adapter setting counts them.
+std::vector<std::pair<int, std::string>> ListGraphicsCards();

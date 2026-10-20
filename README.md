@@ -31,11 +31,14 @@ The first start can take a moment while Windows scans the new program.
 |---|---|
 | ![PC Options](docs/images/pc-options.jpg) | ![Controller layout](docs/images/controller-layout.jpg) |
 | ![Auto Jutsu](docs/images/auto-jutsu.jpg) | ![Key bindings](docs/images/key-bindings.jpg) |
+| ![Display: aspect ratio](docs/images/display.jpg) | ![Graphics: graphics card](docs/images/graphics.jpg) |
 
 - **PC Options menu** (F1 or Back + Start), styled like the game's own menus, usable with keyboard,
   mouse or controller. Every change is saved to `naruto.toml`.
-  - **Display:** fullscreen or windowed, window size, V-Sync, FPS counter.
-  - **Graphics:** render resolution (up to 4K), anti-aliasing, texture filtering.
+  - **Display:** fullscreen or windowed, window size, **aspect ratio (16:9, 21:9, 32:9 or
+    automatic)**, V-Sync, G-Sync / FreeSync, FPS counter.
+  - **Graphics:** render resolution (up to 4K), anti-aliasing, **graphics card** (on PCs with more
+    than one), texture filtering.
   - **Controls:** play with the keyboard, keyboard as player 1 or 2, mouse camera, full key
     remapping with normal / toggle / turbo presses.
   - **Controller layout:** separate layouts for **Controller 1** and **Controller 2**. Pick a button
@@ -49,6 +52,11 @@ The first start can take a moment while Windows scans the new program.
   - Controller: hold your jutsu button (**LT**) and press **A, B, Y or X**.
   - Keep holding to charge the jutsu, let go to release it. Jutsu 1–4 follow the order of the
     game's jutsu menu, and every character works. You still need enough chakra.
+- **Ultrawide:** with 21:9 or 32:9 the game shows more of the world at the sides instead of
+  stretching it (the same method as the Rise of a Ninja port). The game's own menus and HUD are
+  drawn wider.
+
+  ![21:9 on a 16:9 screen](docs/images/ultrawide-21-9.jpg)
 - **PC title screen** at start (30 seconds, or press Enter), and the intro videos can be skipped.
 - **Save Backup Tool:** run `Save Backup Tool\Save Backup Tool.bat` to zip your saves. Share the
   zip if you need help with a save problem.
@@ -93,6 +101,8 @@ you want to be safe.
 
 - Menus, the free-roaming parts and Story Mode scenes run at 30 FPS, the game's own limit there.
   Fights run at up to 60 FPS.
+- Mouse camera (PC Options > Controls > Mouse Moves Camera) works like a controller stick, so it
+  doesn't feel like a PC mouse yet.
 - Some virtual controller drivers (DS4Windows / ViGEm, Rainway) make a controller show as
   "connected" even when it's unplugged.
 

@@ -28,6 +28,7 @@
 #include "pad_input.h"
 #include "player_assignment.h"
 #include "title_screen.h"
+#include "ultrawide.h"
 
 // Guest frame rate for the F3 overlay: the command processor times every guest swap and keeps the
 // result in the perf counter registry, so this is the speed the game itself runs at.
@@ -237,6 +238,8 @@ class NarutobbApp : public rex::ReXApp {
 
   // Back + Start on a controller opens or closes the PC options menu.
   void PollControllerShortcut() {
+    // Also the per-frame place for the aspect ratio setting (PC Options > Display).
+    UpdateUltrawide(runtime() ? runtime()->virtual_membase() : nullptr);
     const uint32_t pads = ReadPads();
     const bool held = (pads & kPadBack) && (pads & kPadStart);
     if (held && !shortcut_held_) {

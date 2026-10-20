@@ -6,6 +6,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <Xinput.h>
+#include <dxgi1_2.h>
 
 namespace {
 
@@ -102,4 +103,24 @@ bool ReadResource(int id, const void** data, size_t* size) {
   *data = bytes;
   *size = SizeofResource(module, info);
   return true;
+}
+
+std::vector<std::pair<int, std::string>> ListGraphicsCards() {
+  std::vector<std::pair<int, std::string>> cards;
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+    return cards;
+  }
+  IDXGIAdapter1* adapter = nullptr;
+  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) == S_OK; ++i) {
+    DXGI_ADAPTER_DESC1 desc{};
+    if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+      char name[256] = {};
+      WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr);
+      cards.emplace_back(static_cast<int>(i), name);
+    }
+    adapter->Release();
+  }
+  factory->Release();
+  return cards;
 }

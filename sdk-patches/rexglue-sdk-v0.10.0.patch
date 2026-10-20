@@ -805,13 +805,20 @@ index 1645848..3c2368e 100644
    std::lock_guard lock(g_mutex);
    g_extra_sinks.push_back(sink);
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..8c49309 100644
+index 19874a5..daa5781 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
-@@ -1984,6 +1984,13 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -1984,6 +1984,20 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // Ultrawide: the game renders anamorphically for the app's target aspect ratio, so the
++  // presenter gets that aspect (host side only; VdQueryVideoMode is unchanged for the game).
++  const double ultrawide_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
++  if (ultrawide_aspect > 1.8) {
++    display_height = 720;
++    display_width = uint32_t(std::clamp(ultrawide_aspect * 720.0, 1.0, 16384.0));
++  }
 +  // Ultrawide: o guest renderiza anamorfico para o aspecto alvo, entao o
 +  // presenter recebe esse aspecto (so no host; VdQueryVideoMode fica intacto).
 +  const double target_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
@@ -840,13 +847,20 @@ index 3027dc8..5728d6a 100644
  
  REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..108203c 100644
+index 001f36b..9d5cd2f 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
-@@ -2407,6 +2407,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2407,6 +2407,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
++  // Ultrawide: the game renders anamorphically for the app's target aspect ratio, so the
++  // presenter gets that aspect (host side only; VdQueryVideoMode is unchanged for the game).
++  const double ultrawide_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");
++  if (ultrawide_aspect > 1.8) {
++    display_height = 720;
++    display_width = uint32_t(std::clamp(ultrawide_aspect * 720.0, 1.0, 16384.0));
++  }
 +  // Ultrawide: o guest renderiza anamorfico para o aspecto alvo, entao o
 +  // presenter recebe esse aspecto (so no host; VdQueryVideoMode fica intacto).
 +  const double target_aspect = rex::cvar::Query<double>("ultrawide_target_aspect");

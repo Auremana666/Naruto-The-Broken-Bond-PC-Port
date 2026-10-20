@@ -24,6 +24,7 @@ set(NARUTOBB_SOURCES
     src/unlock_all.cpp
     src/auto_jutsu.cpp
     src/title_screen.cpp
+    src/ultrawide.cpp
 )
 
 if(WIN32)
@@ -44,7 +45,7 @@ rexglue_setup_target(narutobb GPU_PLUGINS xenos)
 # the layout of overlay classes that rex_app.cpp, compiled into this target, allocates. Without it
 # here, F3 overruns the debug overlay object and corrupts the heap.
 target_compile_definitions(narutobb PRIVATE REXGLUE_ENABLE_PERF_COUNTERS)
-target_link_libraries(narutobb PRIVATE dbghelp psapi winmm)
+target_link_libraries(narutobb PRIVATE dbghelp psapi winmm dxgi)
 
 # Runtime config next to the executable.
 add_custom_target(narutobb_runtime_config ALL

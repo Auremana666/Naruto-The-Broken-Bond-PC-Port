@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <utility>
 
 #include <imgui.h>
@@ -175,7 +176,12 @@ bool RequiresRestart(const std::string& name) {
 }
 
 // "window_size" is not a real setting: it reads and writes window_width/window_height together.
+// Settings the engine only reads at startup (such as the graphics card) refuse changes while the
+// game runs: the new value is kept here, shown in the menu and saved, and applies after a restart.
+std::map<std::string, std::string> g_pending;
+
 std::string GetSetting(const std::string& name) {
+  if (const auto it = g_pending.find(name); it != g_pending.end()) return it->second;
   if (name == "window_size") {
     const std::string w = rex::cvar::GetFlagByName("window_width");
     const std::string h = rex::cvar::GetFlagByName("window_height");
@@ -196,7 +202,7 @@ std::string PadCvar(const char* kind, int button, int index = -1) {
 }
 
 std::string TomlLine(const std::string& name) {
-  const std::string value = rex::cvar::GetFlagByName(name);
+  const std::string value = GetSetting(name);
   for (const auto& entry : rex::cvar::GetRegistry()) {
     if (entry.name == name && entry.type != rex::cvar::FlagType::String) {
       return name + " = " + value;
@@ -318,6 +324,10 @@ void OptionsMenu::BuildPages() {
                                   {"2560X1440", "2560x1440"},
                                   {"3840X2160", "3840x2160"}},
                                  "Size of the game window when it is not fullscreen."));
+  display.items.push_back(choice("ASPECT RATIO", "aspect_ratio",
+                                 {{"16:9", "16:9"}, {"21:9", "21:9"}, {"32:9", "32:9"},
+                                  {"AUTOMATIC", "auto"}},
+                                 "Wider screens see more of the world. Automatic matches your screen."));
   display.items.push_back(toggle("VERTICAL SYNC", "vsync", "Removes tearing. Keep it on."));
   display.items.push_back(toggle("G-SYNC / FREESYNC", "d3d12_allow_variable_refresh_rate_and_tearing",
                                  "Lets a variable refresh rate monitor follow the game."));
@@ -340,6 +350,27 @@ void OptionsMenu::BuildPages() {
   graphics.items.push_back(choice("ANTI-ALIASING", "swap_post_effect",
                                   {{"OFF", "none"}, {"FXAA", "fxaa"}, {"FXAA EXTREME", "fxaa_extreme"}},
                                   "Smooths jagged edges."));
+  {
+    // Graphics card: automatic, or one of the cards found (laptops often have two).
+    std::vector<Choice> cards = {{"AUTOMATIC", "-1"}};
+    const auto found = ListGraphicsCards();
+    for (size_t i = 0; i < found.size(); ++i) {
+      // The same card can be listed more than once (virtual machines): number the copies.
+      std::string label = Upper(found[i].second);
+      int same = 0, nth = 0;
+      for (size_t j = 0; j < found.size(); ++j) {
+        if (found[j].second != found[i].second) continue;
+        ++same;
+        if (j <= i) ++nth;
+      }
+      if (same > 1) label += " #" + std::to_string(nth);
+      cards.push_back({label, std::to_string(found[i].first)});
+    }
+    if (cards.size() > 2) {
+      graphics.items.push_back(choice("GRAPHICS CARD", "d3d12_adapter", cards,
+                                      "The graphics card that draws the game. Applies after a restart."));
+    }
+  }
   graphics.items.push_back(choice("TEXTURE FILTERING", "anisotropic_override",
                                   {{"GAME DEFAULT", "-1"},
                                    {"OFF", "0"},
@@ -620,10 +651,15 @@ void OptionsMenu::Set(const std::string& name, const std::string& value) {
     Set("window_height", value.substr(x + 1));
     return;
   }
-  if (rex::cvar::GetFlagByName(name) == value) {
+  if (GetSetting(name) == value) {
     return;
   }
-  rex::cvar::SetFlagByName(name, value);
+  if (rex::cvar::SetFlagByName(name, value)) {
+    g_pending.erase(name);
+  } else {
+    g_pending[name] = value;  // read only at startup: saved now, applied after a restart
+    restart_needed_ = true;
+  }
   changed_.insert(name);
   if (name == "log_to_file") {
     rex::SetFileLogging(value == "true");
