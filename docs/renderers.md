@@ -72,11 +72,6 @@ The graphics driver keeps compiled pipelines in its own cache between sessions, 
 | No sound | Both | The SDK opens the Windows default playback device at startup; see [Troubleshooting](troubleshooting.md#no-sound) |
 | Sounds missing late in a session | Both | Reported once, before the audio fixes; not seen since, but not checked specifically |
 
-Not issues, but easy to mistake for one:
-
-- **The title screen changes between launches.** The game picks Konoha's time of day at random each time the title loads (morning, evening, night, and others).
-- **Jutsu images stay on screen for about a second.** The original game shows them for the same time.
-
 ## Reporting problems
 
 Include the renderer, the graphics card and driver, the internal resolution, the native renderer's options if you changed them, and the log of the run. For a run started by `run-game.ps1`, the journal next to the log (`.native.jsonl`) helps too.
