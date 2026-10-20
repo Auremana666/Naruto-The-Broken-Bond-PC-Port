@@ -1,4 +1,4 @@
-// The host of the native mode (opt-in): the runtime configuration that puts the
+// The host of the native build: the runtime configuration that puts the
 // graphics system of the D3D boundary in place of the Xenos plugin, the window
 // close and the guest memory reads of the services. The other responsibilities
 // of the host live in host/*.cpp (internal.h).
@@ -14,10 +14,10 @@
 #include <rex/system/interfaces/graphics.h>
 #include <rex/system/xmemory.h>
 
-// The renderer of the game: the Xenos plugin (gpu_plugin) or the native one.
-// The native renderer runs here without the journal unless a path is given.
-REXCVAR_DEFINE_STRING(renderer, "xenos", "broken_bond/Graphics",
-                      "Renderer: xenos (the emulated GPU) or native (Direct3D 12 or Vulkan)")
+// Accept the old selector for configuration compatibility; this build always
+// uses a native backend, including when launched directly with an old TOML.
+REXCVAR_DEFINE_STRING(renderer, "native", "broken_bond/Graphics",
+                      "Native renderer (Direct3D 12 or Vulkan); legacy xenos values are migrated")
     .allowed({"xenos", "native"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // The diagnostic cases: the native mode with the journal and both options below.
@@ -48,7 +48,8 @@ bool CloseRequested() {
 
 void Configure(rex::RuntimeConfig& config) {
   const bool bootstrap = REXCVAR_GET(native_renderer_bootstrap);
-  if (!bootstrap && REXCVAR_GET(renderer) != "native") return;
+  if (REXCVAR_GET(renderer) != "native")
+    REXLOG_INFO("[broken_bond] Migrating legacy renderer selection to native.");
   // The native mode is the D3D boundary on the own engines and the own
   // interrupt registration; the diagnostic cases name both and the journal.
   const auto path = REXCVAR_GET(native_renderer_bootstrap_path);

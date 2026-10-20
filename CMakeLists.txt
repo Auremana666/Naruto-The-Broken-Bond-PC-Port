@@ -25,11 +25,11 @@ set(BROKENBOND_SOURCES
     src/intro_skip.cpp
 )
 
-# The native renderer (opt-in): the Rise of a Ninja renderer adapted to
-# Broken Bond, chosen at launch in place of the Xenos plugin (renderer = "native"
-# in broken_bond.toml). The executable keeps the Xenos plugin as the default.
+# The shipping native build uses the Rise renderer adapted to Broken Bond,
+# with Direct3D 12 and Vulkan APIs. The OFF configuration is the separate
+# Xenos investigation host and does not build a launcher.
 # See docs/renderers.md.
-option(BROKENBOND_NATIVE_RENDERER "Build the native renderer next to the Xenos plugin" OFF)
+option(BROKENBOND_NATIVE_RENDERER "Build the native game and launcher" OFF)
 option(BROKENBOND_NATIVE_D3D12 "Build the native Direct3D 12 backend" ON)
 option(BROKENBOND_NATIVE_VULKAN "Build the native Vulkan backend and SPIR-V shaders" OFF)
 option(BROKENBOND_NATIVE_TESTS "Build the native backend host tests" OFF)
@@ -83,7 +83,12 @@ else()
     add_executable(broken_bond ${BROKENBOND_SOURCES})
 endif()
 
-rexglue_setup_target(broken_bond GPU_PLUGINS xenos)
+if(BROKENBOND_NATIVE_RENDERER)
+    rexglue_setup_target(broken_bond)
+else()
+    # Retain the separate diagnostic host for renderer investigations.
+    rexglue_setup_target(broken_bond GPU_PLUGINS xenos)
+endif()
 if(WIN32)
     target_link_libraries(broken_bond PRIVATE d3d12 dxgi)
 endif()
@@ -127,6 +132,6 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 endif()
 
 option(BROKENBOND_BUILD_LAUNCHER "Build the Windows launcher" ${WIN32})
-if(BROKENBOND_BUILD_LAUNCHER)
+if(BROKENBOND_BUILD_LAUNCHER AND BROKENBOND_NATIVE_RENDERER)
     add_subdirectory(launcher)
 endif()

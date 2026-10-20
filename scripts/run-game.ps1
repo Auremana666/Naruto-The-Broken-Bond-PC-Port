@@ -5,7 +5,7 @@ param(
     [switch]$Keyboard,
     # native: the build of scripts/build-game-native.ps1, with a JSONL journal next to the log.
     [ValidateSet('xenos', 'native')]
-    [string]$Renderer = 'xenos',
+    [string]$Renderer = 'native',
     [ValidateSet('d3d12', 'vulkan')]
     [string]$NativeBackend
 )
@@ -28,10 +28,10 @@ Write-Host "Runtime log: $logFile"
 $launchArguments = @(
     '--game_data_root', ('"{0}"' -f $gameRoot),
     '--user_data_root', ('"{0}"' -f $userRoot),
-    '--gpu_plugin', 'xenos',
     '--log_file', ('"{0}"' -f $logFile),
     '--log_level', $LogLevel
 )
+if ($Renderer -eq 'xenos') { $launchArguments += @('--gpu_plugin', 'xenos') }
 if ($Keyboard) { $launchArguments += '--mnk_mode' }
 $previousFrameDirectory = $env:REX_NATIVE_FRAME_DIR
 if ($Renderer -eq 'native') {

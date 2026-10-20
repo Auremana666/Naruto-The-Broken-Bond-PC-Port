@@ -6,6 +6,8 @@ if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 endif()
 
 get_filename_component(native_project_root "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(BROKENBOND_NATIVE_D3D12 ON)
+set(BROKENBOND_NATIVE_VULKAN OFF)
 include("${CMAKE_CURRENT_LIST_DIR}/../plume-engine.cmake")
 set(NATIVE_RENDERER_FMT_SOURCE "" CACHE PATH "Clean fmt checkout at the accepted revision")
 if(NOT NATIVE_RENDERER_FMT_SOURCE)
@@ -26,6 +28,10 @@ target_compile_features(native_renderer_fmt PUBLIC cxx_std_11)
 # the backend unexamined in a static archive. Compile the real sampler as well.
 add_library(native_renderer_backend OBJECT
     "${native_project_root}/src/gpu/backend/engine.cpp"
+    "${native_project_root}/src/gpu/backend/d3d12/backend.cpp"
+    "${native_project_root}/src/gpu/backend/failure_channel.cpp"
+    "${native_project_root}/src/gpu/backend/pipeline_keys.cpp"
+    "${native_project_root}/src/gpu/backend/pipeline_set.cpp"
     "${native_project_root}/src/gpu/backend/dispatcher.cpp"
     "${native_project_root}/src/gpu/diagnostics/sampler.cpp")
 target_include_directories(native_renderer_backend PUBLIC "${native_project_root}/src")

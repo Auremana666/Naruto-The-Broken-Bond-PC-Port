@@ -14,9 +14,9 @@ param(
     [int]$Jobs = 6
 )
 
-# Builds broken_bond with the native renderer next to the Xenos plugin in a
-# separate build directory, so build/game keeps the Xenos-only executable.
-# The native renderer is selected at launch with renderer = "native".
+# Builds the native game and matching launcher in a separate build directory.
+# This release defaults to Direct3D 12; Vulkan remains opt-in for development.
+# No Xenos plugin is staged.
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if (-not $SdkPrefix) { $SdkPrefix = Join-Path $projectRoot 'build/sdk-install' }
@@ -52,6 +52,7 @@ try {
     # Code generation is shared with the Xenos build (scripts/build-game.ps1).
     & cmake --preset windows-release -B $BuildDirectory "-DCMAKE_PREFIX_PATH=$SdkPrefix" `
         "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue" -DBROKENBOND_NATIVE_RENDERER=ON `
+        -DBROKENBOND_BUILD_LAUNCHER=ON -DBROKENBOND_LAUNCHER_NATIVE_RENDERER=ON `
         "-DNATIVE_RENDERER_PLUME_SOURCE=$PlumeSource" "-DBROKENBOND_XENOS_RECOMP_THIRDPARTY=$XenosRecompThirdparty" @backendOptions
     if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
     & cmake --build $BuildDirectory --target broken_bond broken_bond_launcher --parallel $Jobs
