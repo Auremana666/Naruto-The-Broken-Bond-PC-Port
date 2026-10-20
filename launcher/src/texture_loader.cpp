@@ -1,4 +1,5 @@
 #include "texture_loader.h"
+#include <cstdio>
 
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -19,7 +20,10 @@ LoadedTexture LoadTextureFromFile(ID3D11Device* device, const std::filesystem::p
   }
 
   int channels = 0;
-  unsigned char* data = stbi_load(path.string().c_str(), &tex.width, &tex.height, &channels, 4);
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, path.c_str(), L"rb") != 0 || !file) return tex;
+  unsigned char* data = stbi_load_from_file(file, &tex.width, &tex.height, &channels, 4);
+  std::fclose(file);
   if (!data) {
     return tex;
   }

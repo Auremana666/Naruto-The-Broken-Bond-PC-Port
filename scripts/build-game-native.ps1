@@ -44,7 +44,7 @@ try {
         "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue" -DBROKENBOND_NATIVE_RENDERER=ON `
         "-DNATIVE_RENDERER_PLUME_SOURCE=$PlumeSource" "-DBROKENBOND_XENOS_RECOMP_THIRDPARTY=$XenosRecompThirdparty"
     if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
-    & cmake --build $BuildDirectory --target broken_bond --parallel $Jobs
+    & cmake --build $BuildDirectory --target broken_bond broken_bond_launcher --parallel $Jobs
     if ($LASTEXITCODE -ne 0) { throw 'Native renderer build failed.' }
 } finally {
     Pop-Location

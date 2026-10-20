@@ -2,7 +2,7 @@
 
 #include <filesystem>
 
-// ImGui theme reused from the Rise of a Ninja launcher.
+// The Rise launcher's shared ImGui theme (dark slate and Naruto Chakra orange).
 namespace launcher_theme {
 
 void Apply();

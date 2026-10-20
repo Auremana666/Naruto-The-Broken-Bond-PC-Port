@@ -21,6 +21,8 @@ include(generated/rexglue.cmake)
 set(BROKENBOND_SOURCES
     src/main.cpp
     src/input_replay.cpp
+    src/graphics_device.cpp
+    src/intro_skip.cpp
 )
 
 # The native renderer (opt-in): the Rise of a Ninja D3D12 renderer adapted to
@@ -75,6 +77,9 @@ else()
 endif()
 
 rexglue_setup_target(broken_bond GPU_PLUGINS xenos)
+if(WIN32)
+    target_link_libraries(broken_bond PRIVATE d3d12 dxgi)
+endif()
 
 if(BROKENBOND_NATIVE_RENDERER)
     if(NOT WIN32)

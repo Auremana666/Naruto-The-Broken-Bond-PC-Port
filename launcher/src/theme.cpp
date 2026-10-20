@@ -1,6 +1,26 @@
 #include "theme.h"
 
 #include <imgui.h>
+#include <fstream>
+
+namespace {
+ImFont* LoadFont(const std::filesystem::path& path, const ImWchar* glyph_ranges) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) return nullptr;
+  const auto size = file.tellg();
+  if (size <= 0 || size > 20 * 1024 * 1024) return nullptr;
+  void* bytes = IM_ALLOC(static_cast<size_t>(size));
+  if (!bytes) return nullptr;
+  file.seekg(0);
+  if (!file.read(static_cast<char*>(bytes), size)) {
+    IM_FREE(bytes);
+    return nullptr;
+  }
+  // ImGui owns the buffer. Reading via filesystem::path supports Unicode installs.
+  return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(bytes, static_cast<int>(size),
+                                                  17.0f, nullptr, glyph_ranges);
+}
+}  // namespace
 
 namespace launcher_theme {
 
@@ -9,15 +29,19 @@ void LoadFonts(const std::filesystem::path& base_dir) {
   const auto fonts = base_dir / "assets" / "fonts";
   const auto regular = fonts / "Lato-Regular.ttf";
   const auto bold = fonts / "Lato-Bold.ttf";
-  const auto* glyph_ranges = io.Fonts->GetGlyphRangesCyrillic();
+  // Latin and Cyrillic, plus the dash, ellipsis, arrow and chevron of the key mapping.
+  static ImVector<ImWchar> glyph_ranges_storage;
+  if (glyph_ranges_storage.empty()) {
+    ImFontGlyphRangesBuilder builder;
+    builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+    builder.AddText("\u2014\u2026\u203a\u2190\u2191\u2192\u2193\u00b7");
+    builder.BuildRanges(&glyph_ranges_storage);
+  }
+  const ImWchar* glyph_ranges = glyph_ranges_storage.Data;
   // Bundle the same typeface on every machine; never rely on a Windows font.
-  if (std::filesystem::exists(regular)) {
-    io.FontDefault = io.Fonts->AddFontFromFileTTF(regular.string().c_str(), 17.0f, nullptr, glyph_ranges);
-  }
+  io.FontDefault = LoadFont(regular, glyph_ranges);
   if (!io.FontDefault) io.FontDefault = io.Fonts->AddFontDefault();
-  if (std::filesystem::exists(bold)) {
-    io.Fonts->AddFontFromFileTTF(bold.string().c_str(), 17.0f, nullptr, glyph_ranges);
-  }
+  LoadFont(bold, glyph_ranges);
 }
 
 void Apply() {

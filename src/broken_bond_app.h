@@ -5,7 +5,11 @@
 #pragma once
 
 #include <rex/rex_app.h>
+#include <rex/cvar.h>
+#include <rex/ui/keybinds.h>
 
+#include "fps_overlay.h"
+#include "graphics_device.h"
 #include "input_replay.h"
 #ifdef BROKENBOND_NATIVE_RENDERER_BOOTSTRAP
 #include "gpu/host/app.h"
@@ -29,6 +33,30 @@ class BrokenBondApp : public rex::ReXApp {
     // The native renderer replaces the Xenos plugin when renderer = "native".
     gpu::host::Configure(config);
 #endif
+    if (!config.graphics) SelectXenosAdapter();
+  }
+
+  void OnPostSetup() override { RestoreXenosAdapter(); }
+
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    SetGuestFrameStats(ReadGuestFrameStats);
+    if (rex::cvar::Query<bool>("show_fps_overlay")) {
+      fps_overlay_ = std::make_unique<FpsOverlayDialog>(drawer, ReadGuestFrameStats);
+    }
+    rex::ui::RegisterBind("bind_fps_overlay", "F1", "Toggle FPS overlay", [this] {
+      if (fps_overlay_) {
+        fps_overlay_.reset();
+      } else if (imgui_drawer()) {
+        fps_overlay_ = std::make_unique<FpsOverlayDialog>(imgui_drawer(), ReadGuestFrameStats);
+      }
+      rex::cvar::SetFlagByName("show_fps_overlay", fps_overlay_ ? "true" : "false");
+    });
+  }
+
+  void OnShutdown() override {
+    rex::ui::UnregisterBind("bind_fps_overlay");
+    fps_overlay_.reset();
+    RestoreXenosAdapter();
   }
 
 #ifdef BROKENBOND_NATIVE_RENDERER_BOOTSTRAP
@@ -38,4 +66,7 @@ class BrokenBondApp : public rex::ReXApp {
     return gpu::host::CloseRequested();
   }
 #endif
+
+ private:
+  std::unique_ptr<FpsOverlayDialog> fps_overlay_;
 };

@@ -3,7 +3,8 @@ param(
     [string]$SdkPrefix,
     [ValidateRange(1, 128)]
     [int]$Jobs = 6,
-    [switch]$Test
+    [switch]$Test,
+    [switch]$NativeRenderer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,19 +21,19 @@ if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
     & (Join-Path $visualStudio 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
 }
 
-$buildRoot = Join-Path $projectRoot 'build/launcher'
-& cmake -S (Join-Path $projectRoot 'launcher') -B $buildRoot -G Ninja '-DCMAKE_BUILD_TYPE=Release' '-DCMAKE_CXX_COMPILER=clang++' "-DCMAKE_PREFIX_PATH=$SdkPrefix" "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue"
+$buildRoot = Join-Path $projectRoot $(if ($NativeRenderer) { 'build/launcher-native' } else { 'build/launcher' })
+$nativeOption = if ($NativeRenderer) { 'ON' } else { 'OFF' }
+& cmake -S (Join-Path $projectRoot 'launcher') -B $buildRoot -G Ninja '-DCMAKE_BUILD_TYPE=Release' '-DCMAKE_CXX_COMPILER=clang++' "-DCMAKE_PREFIX_PATH=$SdkPrefix" "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue" "-DBROKENBOND_LAUNCHER_NATIVE_RENDERER=$nativeOption"
 if ($LASTEXITCODE -ne 0) { throw 'Launcher configuration failed.' }
 & cmake --build $buildRoot --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { throw 'Launcher build failed.' }
 if ($Test) {
-    & cmake --build $buildRoot --target broken_bond_launcher_test --parallel $Jobs
+    & cmake --build $buildRoot --target broken_bond_launcher_test broken_bond_key_bindings_test broken_bond_localization_test broken_bond_runtime_input_test --parallel $Jobs
     if ($LASTEXITCODE -ne 0) { throw 'Launcher test build failed.' }
-    $testRoot = Join-Path $buildRoot ('test-data/' + [guid]::NewGuid().ToString('N'))
-    & (Join-Path $buildRoot 'broken_bond_launcher_test.exe') $testRoot
-    if ($LASTEXITCODE -ne 0) { throw 'Launcher regression tests failed.' }
+    & ctest --test-dir $buildRoot --output-on-failure
+    if ($LASTEXITCODE -ne 0) { throw 'Launcher tests failed.' }
 }
-$gameBuild = Join-Path $projectRoot 'build/game'
+$gameBuild = Join-Path $projectRoot $(if ($NativeRenderer) { 'build/native' } else { 'build/game' })
 New-Item -ItemType Directory -Force $gameBuild | Out-Null
 Copy-Item -LiteralPath (Join-Path $buildRoot 'broken_bond_launcher.exe') -Destination $gameBuild -Force
 & cmake -E copy_directory_if_different (Join-Path $buildRoot 'assets') (Join-Path $gameBuild 'assets')

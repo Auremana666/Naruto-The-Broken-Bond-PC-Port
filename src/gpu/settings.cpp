@@ -56,10 +56,10 @@ REXCVAR_DEFINE_DOUBLE(internal_resolution_scale, 0.0, "broken_bond/Graphics",
                       "(0 = resolution_scale)")
     .range(0.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-// Broken Bond has no app-level adapter selection: the native renderer defines
-// the option itself (the Xenos plugin keeps its own choice).
+// Shared launcher choice: native uses the name directly; graphics_device.cpp
+// bridges it to the SDK's adapter index when this executable runs Xenos.
 REXCVAR_DEFINE_STRING(graphics_device, "", "broken_bond/Graphics",
-                      "Graphics adapter of the native renderer by its name (empty = automatic)")
+                      "Graphics adapter by its name (empty = automatic)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace gpu {

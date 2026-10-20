@@ -12,6 +12,8 @@
 #include "game_files.h"
 #include "game_paths.h"
 #include "localization.h"
+#include "pages/key_mapping.h"
+#include "process_arguments.h"
 #include "resource.h"
 #include "texture_loader.h"
 #include "ui.h"
@@ -113,6 +115,7 @@ int main(int argc, char* argv[]) {
 
   GameConfig config;
   ConfigManager::Load(toml_path, config);
+  Localization::SetLanguageCode(config.launcher_language);
 
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
     std::cerr << "Failed to initialize SDL3: " << SDL_GetError() << std::endl;
@@ -177,6 +180,8 @@ int main(int argc, char* argv[]) {
   ImGui_ImplSDL3_InitForD3D(window);
   ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
+  LauncherUI ui(window, base_dir, {cover_tex.srv, cover_tex.width, cover_tex.height});
+
   bool running = true;
   bool request_launch = false;
   std::string status_msg = "";
@@ -184,6 +189,7 @@ int main(int argc, char* argv[]) {
   while (running) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+      if (launcher_ui::CaptureKeyEvent(event)) continue;
       ImGui_ImplSDL3_ProcessEvent(&event);
       if (event.type == SDL_EVENT_QUIT) {
         running = false;
@@ -204,8 +210,7 @@ int main(int argc, char* argv[]) {
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    LauncherUI::Render(window, base_dir, config, request_launch, status_msg, cover_tex.srv,
-                       cover_tex.width, cover_tex.height);
+    ui.Render(config, request_launch, status_msg);
 
     ImGui::Render();
     const float clear_color[4] = { 0.09f, 0.09f, 0.11f, 1.00f };
@@ -233,8 +238,8 @@ int main(int argc, char* argv[]) {
 
       std::filesystem::path game_exe = base_dir / "broken_bond.exe";
       if (std::filesystem::exists(game_exe)) {
-        std::wstring cmdline = L"\"" + game_exe.wstring() + L"\"";
-        const auto user_dir = game_paths::UserDataRoot(base_dir);
+        std::wstring cmdline = QuoteProcessArgument(game_exe.wstring());
+        const auto user_dir = game_paths::UserDataRoot(base_dir, config.user_data_root);
         std::error_code path_error;
         std::filesystem::create_directories(user_dir, path_error);
         if (path_error) {
@@ -242,8 +247,11 @@ int main(int argc, char* argv[]) {
           request_launch = false;
           continue;
         }
-        cmdline += L" --user_data_root=\"" + user_dir.wstring() + L"\" --gpu_plugin=xenos";
-        cmdline += L" --game_data_root=\"" + game_data.wstring() + L"\"";
+        cmdline += L" --user_data_root=" + QuoteProcessArgument(user_dir.wstring()) + L" --gpu_plugin=xenos";
+        if (kNativeRendererBuilt) {
+          cmdline += config.renderer == "native" ? L" --renderer=native" : L" --renderer=xenos";
+        }
+        cmdline += L" --game_data_root=" + QuoteProcessArgument(game_data.wstring());
 
         std::vector<wchar_t> cmd_buf(cmdline.begin(), cmdline.end());
         cmd_buf.push_back(L'\0');
@@ -256,7 +264,7 @@ int main(int argc, char* argv[]) {
 
         std::wstring cwd = base_dir.wstring();
         BOOL success = CreateProcessW(
-            nullptr, cmd_buf.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi);
+            game_exe.c_str(), cmd_buf.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi);
 
         if (success) {
           CloseHandle(pi.hThread);

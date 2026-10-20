@@ -75,6 +75,7 @@ The script applies the patches in `patches/` to the `sdk` submodule, builds the 
 | `rexglue-enable-usbcam.patch` | Enables the USB camera exports the game imports. The camera is reported as disconnected; capture is not implemented |
 | `rexglue-discovery.patch` | Discovers functions reached only through pointer tables without RTTI or through addresses built in code, and adds the guest return address to missing-function errors. See [Automatic function discovery](automatic-function-discovery.md) |
 | `rexglue-xma-decoder.patch` | XMA decoder fixes ported from Xenia Canary, plus local fixes for frames that cross a buffer boundary. The patch header lists each change |
+| `rexglue-mnk-modifiers.patch` | Makes standalone Shift/Control/Alt bindings work alongside movement, as required by the Rise launcher's key mapping defaults |
 
 Rebuild the SDK with this script after changing any patch.
 
@@ -147,12 +148,13 @@ The script starts from the current list, so its entries and order are kept. `-So
 ./build/game/broken_bond_launcher.exe
 ```
 
-The launcher finds the repository's `game/` folder, or a folder you select under **Game Files**. **Play Game** checks `default.xex` against the supported SHA-256, saves the settings, and starts `broken_bond.exe` from its own folder, which uses Xenos. See [Configuration](configuration.md) for the settings and where saves and logs go.
+The launcher finds the repository's `game/` folder, or a folder selected under **Game Files**. **Play Game** verifies `default.xex`, saves settings, and starts the adjacent `broken_bond.exe`. Xenos is the default. The matching launcher in `build/native/` also offers Native and its settings. Both share `build/user/`. See [Configuration](configuration.md) and [launcher parity](../launcher/README.md).
 
 To build only the launcher and run its regression tests, without generating the game code again:
 
 ```powershell
 ./scripts/build-launcher.ps1 -Test
+./scripts/build-launcher.ps1 -NativeRenderer -Test  # matching build/native launcher
 ```
 
 ### From the repository
@@ -180,7 +182,7 @@ Without `--user_data_root`, the SDK keeps saves and caches in its default user f
 
 | Command | What it checks |
 | --- | --- |
-| `./scripts/build-launcher.ps1 -Test` | Launcher configuration and path handling, with synthetic fixtures; no game files needed |
+| `./scripts/build-launcher.ps1 -Test` | Configuration, paths, argument quoting, localization, key mapping names, and the actual SDK input driver; no game files needed |
 | `python -I tools/native-renderer/test_sdb_extraction.py` | The shader container extraction of the native renderer's build, with synthetic data |
 | The `[pointer_table]` and `[code_address]` SDK unit tests | The discovery patch; see [Automatic function discovery](automatic-function-discovery.md) for how to build and run them |
 

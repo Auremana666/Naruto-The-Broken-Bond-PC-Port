@@ -1,41 +1,45 @@
 #pragma once
 
+#include <array>
+#include <string>
+
 enum class TextId {
   WindowTitle,
   TabPlay,
   TabSettings,
   TabGameFiles,
-  GroupGraphics,
+  GroupQuality,
   GroupControls,
-  DisplayLabel,
+  AspectLabel,
+  Aspect16x9,
+  Aspect21x9,
+  Aspect32x9,
+  AspectDescription,
   ResolutionLabel,
-  Res1x,
-  Res2x,
-  Res3x,
-  Res4x,
   RendererLabel,
   TextureFilteringLabel,
   AnisoDefault,
-  AntiAliasingLabel,
-  AaOff,
-  AaFxaa,
-  AaFxaaExtreme,
+  FxaaLabel,
+  FxaaOff,
+  FxaaNormal,
+  FxaaExtreme,
   PostProcessingLabel,
   PostBilinear,
   PostCas,
   PostFsr,
   DitherLabel,
+  FpsOverlayLabel,
   FullscreenLabel,
   VsyncLabel,
-  VsyncTooltip,
+  VsyncDescription,
   SdlInputLabel,
+  ControllerLabel,
   NoControllerDetected,
+  SkipIntroLabel,
   BtnPlay,
   BtnResetRecommended,
-  BtnSaveSettings,
   BtnOpenFolder,
   SettingsAppliedNotice,
-  SettingsSavedNotice,
   StatusReady,
   StatusNotFound,
   FilesMissingDesc,
@@ -52,18 +56,16 @@ enum class TextId {
   PlayIntro,
   ReadyDetail,
   ManageFiles,
-  SettingsIntro,
   FilesIntro,
   FolderHeading,
   FolderHint,
   SetupHeading,
   SetupHint,
   RecommendedApplied,
-  SaveFailed,
   ExeMissing,
   ExeMissingStatus,
   FilesDetected,
-  Exit,
+  // --- Game language ---
   GroupGame,
   GameLanguageLabel,
   GameLanguageEnglish,
@@ -72,10 +74,111 @@ enum class TextId {
   GameLanguageSpanish,
   GameLanguageItalian,
   GameLanguageCustom,
-  GameLanguageHint,
-  KeyboardLabel,
-  KeyboardHint,
+  GameLanguageDescription,
+  LauncherLanguageTooltip,
+  // --- Renderer ---
+  RendererXenos,
+  RendererNative,
+  RendererDescription,
+  XenosOnlyReason,
+  MsaaLabel,
+  MsaaOriginal,
+  MsaaDescription,
+  TransparencyAaLabel,
+  TransparencyAaDescription,
+  FrameRateLabel,
+  FrameRateDescription,
+  BrightnessLabel,
+  BrightnessDescription,
+  FrameLatencyLabel,
+  FrameLatencyLowest,
+  FrameLatencyDescription,
+  TripleBufferingLabel,
+  TripleBufferingDescription,
+  VsyncNativeDescription,
+  // --- Graphics card ---
+  GraphicsDeviceLabel,
+  GraphicsDeviceAuto,
+  GraphicsDeviceDescription,
+  GroupDisplay,
+  GroupAdvanced,
+  XenosOnlyTag,
+  NativeOnlyTag,
+  NativeOnlyReason,
+  ResolutionDescription,
+  TextureFilteringDescription,
+  FxaaDescription,
+  PostProcessingDescription,
+  DitherDescription,
+  FpsOverlayDescription,
+  FullscreenDescription,
+  SkipIntroDescription,
+  SdlInputDescription,
+  ControllerDescription,
+  KeyboardMouseLabel,
+  KeyboardMouseDescription,
+  MouseCameraLabel,
+  MouseCameraDescription,
+  MouseSensitivityLabel,
+  MouseSensitivityDescription,
+  KeysLabel,
+  KeysDescription,
+  MapKeysButton,
+  MapKeysTitle,
+  MapKeysPath,
+  KeysButtonsHeading,
+  LeftStickName,
+  RightStickName,
+  DpadName,
+  KeysPlusMouse,
+  DirectionUp,
+  DirectionDown,
+  DirectionLeft,
+  DirectionRight,
+  KeysHint,
+  KeyCapturePrompt,
+  KeysRestoreDefaults,
+  KeysDone,
+  KeyMovedStatus,
+  KeyReservedStatus,
+  KeysRestoredStatus,
+  KeySpaceName,
+  MouseLeftName,
+  MouseRightName,
+  MouseMiddleName,
+  SaveFailed,
+  UnavailableTag,
+  AspectUnavailableReason,
   Count
 };
 
-const char* Tr(TextId id);
+class Localization {
+ public:
+  enum class Language {
+    English,
+    Portuguese,
+    French,
+    German,
+    Spanish,
+    Italian,
+    Russian,
+    Count
+  };
+
+  struct LanguageOption {
+    Language language;
+    const char* code;
+    const char* name;
+  };
+
+  static const std::array<LanguageOption, 7>& GetLanguages();
+  static void SetLanguage(Language lang);
+  static Language GetLanguage();
+  static void SetLanguageCode(const std::string& code);
+  static std::string GetLanguageCode();
+  static const char* Get(TextId id);
+};
+
+inline const char* Tr(TextId id) {
+  return Localization::Get(id);
+}

@@ -51,7 +51,7 @@ Fight Mode, the Xbox Live features, and most of the story have not been tested y
 
 **Launcher and recompilation**
 
-- **Launcher** derived from the Rise of a Ninja port's, with game language, graphics, and control settings, game folder selection, and a check of the game executable before launch.
+- **Launcher** reused from the current Rise of a Ninja port, with the same settings layout, graphics card selection, keyboard and mouse mapping, seven interface languages, and game-folder verification, without DLC. See [launcher features and remaining gaps](launcher/README.md).
 - **Automatic function discovery:** a ReXGlue patch finds the functions the game reaches only through pointer tables or addresses built in code, so the port needs no hand-written function list. See [Automatic function discovery](docs/automatic-function-discovery.md).
 
 ## Renderers
