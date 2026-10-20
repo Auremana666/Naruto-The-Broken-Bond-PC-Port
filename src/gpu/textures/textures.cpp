@@ -183,11 +183,16 @@ std::array<uint32_t, 6> PhysicalFetch(std::array<uint32_t, 6> d) {
 // k_32_32_FLOAT and DXN. It acts under the fetch swizzle: a component selector
 // past the last host component takes that component, the constants stay. The
 // host swizzle is given as the four host components (formats.h).
-uint32_t HostSwizzledMapping(uint32_t mapping, const uint8_t (&host)[4]) {
-  for (unsigned i = 0; i < 4; ++i) {
-    const uint32_t select = (mapping >> (3 * i)) & 7;
-    if (select < 4) mapping = (mapping & ~(7u << (3 * i))) | (uint32_t(host[select]) << (3 * i));
-  }
+ComponentMapping HostSwizzledMapping(ComponentMapping mapping, const uint8_t (&host)[4]) {
+  for (auto& swizzle : mapping)
+    if (swizzle < Swizzle::kZero) swizzle = Swizzle(host[uint32_t(swizzle)]);
+  return mapping;
+}
+// The fetch swizzle (3 bits per component, selectors x, y, z, w, 0, 1) as the
+// component mapping; selectors above 5 are refused before.
+ComponentMapping FetchMapping(uint32_t swizzle) {
+  ComponentMapping mapping;
+  for (unsigned i = 0; i < 4; ++i) mapping[i] = Swizzle((swizzle >> (3 * i)) & 7);
   return mapping;
 }
 // The translation of a fetch constant without its content: the request
@@ -226,17 +231,23 @@ bool DecodeTexture(uint8_t* base, const std::array<uint32_t, 6>& d, uint32_t reg
   t.reg = reg;
   t.width = width;
   t.height = height;
-  // Xenos swizzle selectors (x, y, z, w, 0, 1) match the D3D12 component mapping values.
-  t.component_mapping = swizzle | 0x1000;
+  // The Xenos swizzle selectors (x, y, z, w, 0, 1) are the swizzles, in order.
+  t.component_mapping = FetchMapping(swizzle);
   // Sampler state of the fetch constant.
   const uint32_t mag = (d[3] >> 19) & 3, min = (d[3] >> 21) & 3, mip = (d[3] >> 23) & 3, aniso = (d[3] >> 25) & 7;
   if (aniso == 7 || aniso > 5 || mag > 1 || min > 1 || mip > 2) { reason = "texture-filter-uncovered"; return false; }
-  t.filter = aniso ? 0x55u : (min << 4) | (mag << 2) | (mip & 1);  // D3D12_FILTER encoding
+  // The mip filter base map (2) samples the base level as point (max_lod below).
+  const auto filter = [](uint32_t linear) { return linear ? Filter::kLinear : Filter::kPoint; };
+  t.min_filter = filter(min);
+  t.mag_filter = filter(mag);
+  t.mip_filter = filter(mip & 1);
+  t.anisotropic = aniso != 0;
   t.max_anisotropy = aniso ? 1u << (aniso - 1) : 1;
   // anisotropic_override (SDK levels: 0 off, 1 to 5 for 1x to 16x) replaces
   // the title's filter only with a linear mip filter.
   if (const int32_t forced = CurrentSettings().anisotropic_override; forced >= 0 && mip == 1) {
-    t.filter = forced ? 0x55u : (min << 4) | (mag << 2) | 1u;
+    t.anisotropic = forced != 0;
+    t.mip_filter = Filter::kLinear;
     t.max_anisotropy = forced ? 1u << (forced - 1) : 1;
     ++texture_anisotropy_forced;
   }
@@ -244,10 +255,12 @@ bool DecodeTexture(uint8_t* base, const std::array<uint32_t, 6>& d, uint32_t reg
   // same mirroring, clamp to border is BORDER and mirror clamp to border
   // MIRROR_ONCE. Border color: ABGR white is opaque white, the others
   // transparent black.
-  const uint32_t modes[] = {1, 2, 3, 5, 3, 5, 4, 5};  // D3D12_TEXTURE_ADDRESS_MODE
+  using A = AddressMode;
+  const AddressMode modes[] = {A::kWrap, A::kMirror, A::kClamp, A::kMirrorOnce,
+                               A::kClamp, A::kMirrorOnce, A::kBorder, A::kMirrorOnce};
   t.address_u = modes[(d[0] >> 10) & 7];
   t.address_v = modes[(d[0] >> 13) & 7];
-  t.address_w = 3;
+  t.address_w = A::kClamp;
   t.border_color = (d[5] & 3) == 1 ? std::array<float, 4>{1, 1, 1, 1} : std::array<float, 4>{0, 0, 0, 0};
   t.lod_bias = float(int32_t(((d[4] >> 12) & 0x3FF) << 22) >> 22) / 32.0f;
   t.min_lod = float(mip_min);
@@ -269,16 +282,12 @@ bool DecodeTexture(uint8_t* base, const std::array<uint32_t, 6>& d, uint32_t reg
     t.resolved = true;
     t.key = header;
     if (format == 6) {
-      t.component_mapping = 0x1688;
+      t.component_mapping = kIdentityMapping;
     } else {
-      uint32_t mapping = 0x1000;
-      for (unsigned i = 0; i < 4; ++i) {
-        const uint32_t select = (swizzle >> (3 * i)) & 7;
-        mapping |= (select < 4 ? 0u : select) << (3 * i);
-      }
-      t.component_mapping = mapping;
+      for (auto& component : t.component_mapping)
+        if (component < Swizzle::kZero) component = Swizzle::kR;
     }
-    t.format = depth_dest ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    t.format = depth_dest ? TextureFormat::kR32Float : TextureFormat::kR8G8B8A8Unorm;
     t.min_lod = t.max_lod = 0;
     if (want_record) record += fmt::format(",\"resolved_header\":{},\"resolved_format\":{}", header, format);
     return true;
@@ -290,8 +299,7 @@ bool DecodeTexture(uint8_t* base, const std::array<uint32_t, 6>& d, uint32_t reg
   if (!host) { reason = fmt::format("texture-format-uncovered-{}", format); return false; }
   // A block-compressed texture whose base is not a
   // multiple of 4 texels takes the SDK's decompressed host format.
-  if (host->host >= DXGI_FORMAT_BC1_TYPELESS && host->host <= DXGI_FORMAT_BC5_SNORM &&
-      ((width & 3) || (height & 3))) {
+  if (IsBlockCompressed(host->host) && ((width & 3) || (height & 3))) {
     host = FindGuestFormat(format, true);
     if (!host) { reason = "texture-block-size-uncovered"; return false; }
   }

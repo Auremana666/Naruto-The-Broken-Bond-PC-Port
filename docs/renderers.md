@@ -12,9 +12,15 @@ The ReXGlue SDK's emulation of the Xbox 360 GPU, derived from Xenia. It executes
 
 ### Native (optional build)
 
-The native renderer replaces the GPU emulation. It intercepts the game's Direct3D calls (device, resources, render states, draws, and presents) and issues them with Direct3D 12 through [Plume](https://github.com/renderbag/plume). The game's shaders are translated ahead of time by the XenosRecomp fork in `tools/xenosrecomp/`, compiled when the port is built, and embedded in `broken_bond.exe`, so no shader compiler runs during play.
+The native renderer replaces the GPU emulation. It intercepts the game's Direct3D calls (device, resources, render states, draws, and presents) and issues them with Direct3D 12 or Vulkan through [Plume](https://github.com/renderbag/plume). The game's shaders are translated ahead of time by the XenosRecomp fork in `tools/xenosrecomp/`, compiled when the port is built, and embedded in `broken_bond.exe`, so no shader compiler runs during play.
 
-It is the renderer of the [Naruto: Rise of a Ninja recomp](https://github.com/jorjbarbosa/naruto-rise-recomp), the first game's port, adapted to this game: the hooks follow this game's addresses, and the parts specific to this game, such as its instanced draws in the open world, are its own. It has been played through the menus, the start of Story Mode with its first fights, and the open world, without missing draws. It is built separately (`scripts/build-game-native.ps1`) and is not offered by the launcher yet.
+Vulkan is an optional native backend imported from Rise and adapted for Broken
+Bond's BC4 textures and instanced draws. Build and select it with the
+[Vulkan instructions](build-and-run.md#native-vulkan). The earlier gameplay
+observations below describe Direct3D 12. Vulkan has been checked in bounded
+Konoha boots and host tests; full gameplay coverage has not been validated.
+
+It is the renderer of the [Naruto: Rise of a Ninja recomp](https://github.com/jorjbarbosa/naruto-rise-recomp), the first game's port, adapted to this game: the hooks follow this game's addresses, and the parts specific to this game, such as its instanced draws in the open world, are its own. It has been played through the menus, the start of Story Mode with its first fights, and the open world, without missing draws. It is built separately (`scripts/build-game-native.ps1`) and offered by the matching native launcher.
 
 Without the emulation layer, it offers options that Xenos does not have: frame rates above the game's own, MSAA, transparency antialiasing, a fractional internal resolution, brightness, frame latency, triple buffering, and graphics card selection.
 
@@ -22,13 +28,13 @@ Without the emulation layer, it offers options that Xenos does not have: frame r
 
 | | Xenos | Native |
 | --- | --- | --- |
-| Drawing | Emulated Xbox 360 GPU (Direct3D 12 backend) | The game's Direct3D calls on Direct3D 12 |
+| Drawing | Emulated Xbox 360 GPU (Direct3D 12 backend) | The game's Direct3D calls on Direct3D 12 or Vulkan |
 | Shaders | Translated on first appearance, cached per user | Translated at build time, embedded in the executable |
 | Frame rate | The game's own | The game's own, or 31 to 240 with `frame_rate` |
 | Resolution | 1× to 4× | 1× to 4×, with fractions |
 | Anti-aliasing | FXAA, CAS/FSR | The game's MSAA or 2×/4×/8×, transparency antialiasing, FXAA, CAS/FSR |
 | Frame rate display | — | The window title |
-| Started by | The launcher, `run-game.ps1` | `run-game.ps1 -Renderer native`, or `renderer = "native"` |
+| Started by | The launcher, `run-game.ps1` | The matching launcher, `run-game.ps1 -Renderer native`, or `renderer = "native"` |
 
 ## Choosing the renderer
 
@@ -44,7 +50,7 @@ Or set `renderer` in `build/native/broken_bond.toml` and start `build/native/bro
 renderer = "native"   # or "xenos"
 ```
 
-Without the key, Xenos is used. The choice takes effect on the next launch. The log names the graphics card in use: `DXGI adapter:` for Xenos, `Native renderer adapter:` for the native renderer.
+Without the key, Xenos is used. The choice takes effect on the next launch. The native log records both the backend and adapter under `Native renderer backend:`.
 
 ## Frame rate
 
@@ -79,7 +85,7 @@ Where the step is not well below the frame time, the frames follow the step inst
 
 ## Pipelines
 
-A pipeline is the combination of shaders, vertex layout, and render states a draw needs. Direct3D 12 compiles it before the draw can run. The native renderer never skips a draw for a missing pipeline: the draw waits for it instead.
+A pipeline is the combination of shaders, vertex layout, and render states a draw needs. The selected graphics API compiles it before the draw can run. The native renderer never skips a draw for a missing pipeline: the draw waits for it instead.
 
 - **Startup list.** Builds that carry a list of the pipelines seen in play (`src/gpu/shaders/pipeline_cache.inc`, see [Build and run](build-and-run.md#pipeline-list)) compile it in the background at startup.
 - **Ahead of each batch.** The pipelines a batch of draws lacks compile in parallel before its draws run.
@@ -93,7 +99,6 @@ The graphics driver keeps compiled pipelines in its own cache between sessions, 
 | Issue | Renderer | Details |
 | --- | --- | --- |
 | Short pause when something new appears | Native | A pipeline outside the startup list compiles the first time it appears on a given driver, and the draw waits for it. New areas of the open world can stutter on the first visit; later visits do not |
-| Not in the launcher | Native | Start it with `run-game.ps1 -Renderer native` or `renderer = "native"`; see [Choosing the renderer](#choosing-the-renderer) |
 | Frame rates above 60 not yet played | Native | `frame_rate` accepts up to 240, but only 60 has been played; see [Frame rate](#frame-rate) |
 | Diagnostic mode stops the game | Native | `REX_NATIVE_DIAGNOSTICS=1` stops the game during device creation; leave it unset |
 | Black frames | Xenos | Black frames flicker during play. `execute_unclipped_draw_vs_on_cpu = true` in the configuration stops them |

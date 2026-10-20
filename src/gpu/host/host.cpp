@@ -17,7 +17,7 @@
 // The renderer of the game: the Xenos plugin (gpu_plugin) or the native one.
 // The native renderer runs here without the journal unless a path is given.
 REXCVAR_DEFINE_STRING(renderer, "xenos", "broken_bond/Graphics",
-                      "Renderer: xenos (the emulated GPU) or native (Direct3D 12)")
+                      "Renderer: xenos (the emulated GPU) or native (Direct3D 12 or Vulkan)")
     .allowed({"xenos", "native"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // The diagnostic cases: the native mode with the journal and both options below.
@@ -58,10 +58,22 @@ void Configure(rex::RuntimeConfig& config) {
   if (config.graphics) std::_Exit(88);
   if (!path.empty() && !OpenJournal(path)) std::_Exit(88);
   enabled = true;
-  REXLOG_INFO("[broken_bond] Renderer: native (Direct3D 12){}", path.empty() ? "" : ", with the journal");
   // The graphics options, read once before the graphics system exists.
   gpu::RegisterPluginOptions();
   gpu::LoadSettings();
+  const auto& backend = gpu::CurrentSettings().native_backend;
+  bool available = false;
+#if !defined(BROKENBOND_NATIVE_D3D12_DISABLED)
+  available |= backend == "d3d12";
+#endif
+#if defined(BROKENBOND_NATIVE_VULKAN)
+  available |= backend == "vulkan";
+#endif
+  if (!available) {
+    REXLOG_ERROR("[broken_bond] Requested native_backend '{}' is unavailable in this build. No backend fallback.", backend);
+    std::_Exit(88);
+  }
+  REXLOG_INFO("[broken_bond] Renderer: native; backend: {}{}", backend, path.empty() ? "" : ", with the journal");
   gpu::crash_dump::Install();  // REX_NATIVE_CRASH_DUMP=1 (crash_dump.h).
   gpu::heap_watch::Install();  // REX_NATIVE_HEAP_WATCH=1 (heap_watch.h).
   config.gpu_plugin.clear();

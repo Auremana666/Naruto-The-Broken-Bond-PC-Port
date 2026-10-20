@@ -75,12 +75,15 @@ int64_t Qpc() {
   return t.QuadPart;
 }
 // The own lot of this frame end completed on the own queue: its fence becomes
-// the completed value. A Present carried by the frame end (none: the Swap
-// posts its own) is posted first.
-void PublishFrame(const FrameEnd& frame, int64_t completed_qpc) {
+// the completed value, unless the session's failure channel refuses it
+// (false: a failure was retained since the caller checked). A Present carried
+// by the frame end (none: the Swap posts its own) is posted first.
+bool PublishFrame(const FrameEnd& frame, int64_t completed_qpc, gpu::FailureChannel& failures) {
   if (frame.present && !gpu::PresentFrame(frame.present) && !closing.load())
     Stop("own-frame-present-post", Context(), frame.fence, uint32_t(frame.swap), 88);
-  if (!gpu::PublishFrameFence(frame.fence))
+  const auto publication = gpu::PublishFrameFence(frame.fence, failures);
+  if (publication == gpu::FramePublication::kRefused) return false;
+  if (publication != gpu::FramePublication::kPublished)
     Stop("own-frame-end-publication", Context(), frame.fence, uint32_t(frame.swap), 88);
   const int64_t now = Qpc();
   const uint64_t n = frame_ends.fetch_add(1) + 1;
@@ -95,6 +98,7 @@ void PublishFrame(const FrameEnd& frame, int64_t completed_qpc) {
         "\"frame_end\":{},\"swap\":{},\"fence\":{},\"lot_us\":{},\"published_after_lot_us\":{},\"mode\":"
         "\"frame-completion\"", n, frame.swap, frame.fence, (completed_qpc - frame.queued_qpc) * 1000000 / qpc_frequency,
         (now - completed_qpc) * 1000000 / qpc_frequency));
+  return true;
 }
 int Run() {
   on_thread = true;
@@ -122,19 +126,24 @@ int Run() {
     const int64_t completed_qpc = Qpc();
     CloseHandle(frame->event);
     frame->event = nullptr;
+    // Nothing is published once the session's failure channel holds a
+    // failure: checked here, and again under the channel at the fence store.
     std::string failure;
     auto* engine = gpu::host::ActiveDispatcher();
-    if (!engine || engine->PostedFailure(failure)) {
-      // Nothing is published after a failed posted operation.
+    bool published = false;
+    if (engine && !engine->PostedFailure(failure)) {
+      // Not covered: without the census the frame is published without them.
+      if (!frame->interrupts.empty() && !gpu::NoteUncoveredOperation("own-frame-end-sync-uncovered"))
+        Stop("own-frame-end-sync-uncovered", Context(), frame->fence, uint32_t(frame->interrupts.size()), 86);
+      published = PublishFrame(*frame, completed_qpc, engine->Failures());
+      if (!published) engine->PostedFailure(failure);  // Retained in between.
+    }
+    if (!published) {
       frames_refused.store(true);
       Record("native-own-frame-end-refused", fmt::format("\"fence\":{},\"swap\":{},\"evidence\":{}",
                     frame->fence, frame->swap, failure.empty() ? "null" : failure));
       continue;
     }
-    // Not covered: without the census the frame is published without them.
-    if (!frame->interrupts.empty() && !gpu::NoteUncoveredOperation("own-frame-end-sync-uncovered"))
-      Stop("own-frame-end-sync-uncovered", Context(), frame->fence, uint32_t(frame->interrupts.size()), 86);
-    PublishFrame(*frame, completed_qpc);
     frame.reset();
   }
   return 0;

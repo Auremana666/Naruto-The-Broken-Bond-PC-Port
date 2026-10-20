@@ -84,6 +84,7 @@ int main(int argc, char** argv) {
     Require(ConfigManager::Load(path, options), "Extended settings failed to load");
     Require(options.key_binds[0] == "J,K,L", "Loading truncated hand-written key alternatives");
     options.graphics_device = "Test graphics adapter";
+    options.native_backend = "vulkan";
     options.launcher_language = "pt_BR";
     options.mnk_mouse = false;
     options.mnk_sensitivity = 1.75;
@@ -108,6 +109,7 @@ int main(int argc, char** argv) {
     Require(!extended.contains("ultrawide_target_aspect"), "Saving introduced an unsupported aspect option");
     if (kNativeRendererBuilt) {
       Require(restored.msaa_samples == 8 && restored.frame_rate == 120 && restored.brightness == 0.6 &&
+                  restored.native_backend == "vulkan" &&
                   restored.internal_resolution_scale == 1.5 && restored.max_frame_latency == 3 &&
                   restored.triple_buffering && restored.transparency_antialiasing,
               "Native renderer options did not persist");
@@ -115,6 +117,13 @@ int main(int argc, char** argv) {
       Require(!extended.contains("frame_rate") && extended["renderer"].value<std::string>() == "native",
               "Xenos launcher overwrote unmanaged native settings");
     }
+    Write(path, "renderer = 'xenos'\nnative_backend = 'vulkan'\n");
+    GameConfig xenos;
+    Require(ConfigManager::Load(path, xenos) && xenos.renderer == "xenos" &&
+                xenos.native_backend == "vulkan", "Loading Vulkan preference changed the Xenos selection");
+    Require(ConfigManager::Save(path, xenos), "Xenos selection failed to save");
+    Require(toml::parse_file(path.string())["renderer"].value<std::string>() == "xenos",
+            "Saving a native-capable configuration changed the Xenos selection");
 
     const auto repo = root / "repository";
     const auto base = repo / "build" / "game";

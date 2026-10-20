@@ -7,18 +7,31 @@
 // dxc -T vs_6_0 -E vs_main -Vn kNativeDepthResolveVs -Fh vs.h
 // dxc -T ps_6_0 -E ps_main -D MSAA=1 -Vn kNativeDepthResolveMsPs -Fh ms.h
 // dxc -T ps_6_0 -E ps_main -D MSAA=0 -Vn kNativeDepthResolveSinglePs -Fh single.h
+// The SPIR-V of the Vulkan backend comes from the build
+// (tools/native-renderer/build-pass-spirv.py): the source in set 0, the pass
+// constants (root constants in D3D12) as push constants.
 #ifndef MSAA
 #define MSAA 0
 #endif
 #if MSAA
-Texture2DMS<float> source : register(t0);
+[[vk::binding(0, 0)]] Texture2DMS<float> source : register(t0);
 #else
-Texture2D<float> source : register(t0);
+[[vk::binding(0, 0)]] Texture2D<float> source : register(t0);
 #endif
+#ifdef __spirv__
+struct PassConstants {
+  int sample_index;
+  uint samples;
+};
+[[vk::push_constant]] PassConstants pass_constants;
+#define sample_index pass_constants.sample_index
+#define samples pass_constants.samples
+#else
 cbuffer Pass : register(b0) {
   int sample_index;  // -1: minimum of all samples.
   uint samples;
 };
+#endif
 
 float4 vs_main(uint id : SV_VertexID) : SV_Position {
   const float2 uv = float2((id << 1) & 2, id & 2);

@@ -99,7 +99,7 @@ const char* const kStringsEn[] = {
     // --- Renderer ---
     "Xenos (emulated GPU)",  // RendererXenos
     "Native (Direct3D 12)",  // RendererNative
-    "Xenos emulates the Xbox 360 GPU and is the default. Native Direct3D 12 is available in builds that include it; its options apply only when Native is selected.",  // RendererDescription
+    "Xenos emulates the Xbox 360 GPU and is the default. Native Direct3D 12 and Vulkan appear when included in the build; native options apply only to those selections.",  // RendererDescription
     "Not available with the native renderer. Choose Xenos under Renderer to use it.",  // XenosOnlyReason
     "MSAA",  // MsaaLabel
     "4x (original)",  // MsaaOriginal

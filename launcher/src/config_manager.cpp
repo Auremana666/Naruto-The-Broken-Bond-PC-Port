@@ -39,6 +39,7 @@ bool ConfigManager::Load(const std::filesystem::path& toml_path, GameConfig& con
     if (auto v = tbl["brightness"].value<double>()) if (std::isfinite(*v)) config.brightness = *v;
     if (auto v = tbl["internal_resolution_scale"].value<double>()) if (std::isfinite(*v)) config.internal_resolution_scale = *v;
     if (auto v = tbl["renderer"].value<std::string>()) config.renderer = *v == "native" ? "native" : "xenos";
+    if (auto v = tbl["native_backend"].value<std::string>()) config.native_backend = *v;
     if (auto v = tbl["user_data_root"].value<std::string>()) config.user_data_root = *v;
     if (auto v = tbl["resolution_scale"].value<int>()) {
       config.resolution_scale = config.draw_resolution_scale_x = config.draw_resolution_scale_y = *v;
@@ -88,6 +89,7 @@ bool ConfigManager::Save(const std::filesystem::path& toml_path, const GameConfi
   tbl.insert_or_assign("anisotropic_override", config.anisotropic_override);
   if (kNativeRendererBuilt) {
     tbl.insert_or_assign("renderer", config.renderer == "native" ? "native" : "xenos");
+    tbl.insert_or_assign("native_backend", config.native_backend);
     tbl.insert_or_assign("msaa_samples", config.msaa_samples);
     tbl.insert_or_assign("frame_rate", config.frame_rate);
     tbl.insert_or_assign("max_frame_latency", config.max_frame_latency);

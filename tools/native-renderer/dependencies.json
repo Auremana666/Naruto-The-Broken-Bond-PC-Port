@@ -6,7 +6,12 @@
     "revision": "d72379344dacd3dbf9f810f92ddc87e6de1845b1",
     "allocator_url": "https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator",
     "allocator_revision": "9ef66bc14edd10dee0de3a545b98578363552f66",
-    "cmake_variable": "NATIVE_RENDERER_PLUME_SOURCE"
+    "cmake_variable": "NATIVE_RENDERER_PLUME_SOURCE",
+    "vulkan_submodules": {
+      "contrib/volk": "be3dbd49bf77052665e96b6c7484af855e7e5f67",
+      "contrib/Vulkan-Headers": "2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350",
+      "contrib/VulkanMemoryAllocator": "29b35ea4232688c0f42cdff0c10848290760a417"
+    }
   },
   "isolated_backend": {
     "platform": "Windows x64 with Windows SDK D3D12 libraries",

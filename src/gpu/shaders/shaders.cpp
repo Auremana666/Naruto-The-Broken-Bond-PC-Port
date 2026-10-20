@@ -70,9 +70,6 @@ std::string ShaderRecord(uint8_t* base, uint32_t object, bool vertex) {
                      virtual_size <= 0x8000 ? GuestHex(base, container, virtual_size) : "", microcode);
 }
 
-// The embedded shader cache (shaders/shader_cache_data.cpp).
-extern const char kShaderCache[];
-extern const size_t kShaderCacheSize;
 ShaderCache shader_cache;
 
 
@@ -128,97 +125,27 @@ std::vector<std::pair<uint32_t, uint32_t>> TfetchConstants(const std::vector<uin
   return out;
 }
 
-// The cache is embedded in the build (shaders/shader_cache_data.cpp). The
-// container is decompressed by
-// the Windows Compression API (MSZIP, cabinet.dll), its payload checked by
-// SHA-256, and the index text, the DXIL and the spec constant variants read
-// from memory (layout in tools/native-renderer/build-embedded-shader-cache.py).
-bool UnpackShaderCache(std::string& text) {
-  const auto* c = reinterpret_cast<const uint8_t*>(kShaderCache);
-  const size_t size = kShaderCacheSize;
-  auto u32 = [](const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; };
-  auto u64 = [](const uint8_t* p) { uint64_t v; std::memcpy(&v, p, 8); return v; };
-  constexpr size_t kHeader = 64;  // Magic, 3 x u32, 2 x u64, SHA-256.
-  if (size < kHeader || std::memcmp(c, "NRSC", 4) || u32(c + 4) != 1 || u32(c + 8) != 2) {
-    shader_cache.error = "embedded-container";
-    return false;
-  }
-  const uint64_t payload_bytes = u64(c + 16), packed_bytes = u64(c + 24);
-  if (packed_bytes != size - kHeader || payload_bytes > (uint64_t(1) << 30)) {
-    shader_cache.error = "embedded-sizes";
-    return false;
-  }
-  HMODULE cabinet = LoadLibraryW(L"cabinet.dll");
-  using Create = BOOL(WINAPI*)(DWORD, void*, HANDLE*);
-  using Run = BOOL(WINAPI*)(HANDLE, const void*, SIZE_T, void*, SIZE_T, SIZE_T*);
-  using Close = BOOL(WINAPI*)(HANDLE);
-  auto create = cabinet ? reinterpret_cast<Create>(GetProcAddress(cabinet, "CreateDecompressor")) : nullptr;
-  auto run = cabinet ? reinterpret_cast<Run>(GetProcAddress(cabinet, "Decompress")) : nullptr;
-  auto close = cabinet ? reinterpret_cast<Close>(GetProcAddress(cabinet, "CloseDecompressor")) : nullptr;
-  HANDLE decompressor = nullptr;
-  if (!create || !run || !close || !create(2 /* COMPRESS_ALGORITHM_MSZIP */, nullptr, &decompressor)) {
-    shader_cache.error = "embedded-decompressor";
-    return false;
-  }
-  shader_cache.payload.resize(size_t(payload_bytes));
-  SIZE_T written = 0;
-  const bool unpacked = run(decompressor, c + kHeader, SIZE_T(packed_bytes), shader_cache.payload.data(),
-                            SIZE_T(payload_bytes), &written);
-  close(decompressor);
-  if (!unpacked || written != payload_bytes) {
-    shader_cache.error = "embedded-decompress";
-    return false;
-  }
-  std::string expected;
-  for (unsigned i = 0; i < 32; ++i) expected += fmt::format("{:02x}", c[32 + i]);
-  const std::string actual = Sha256Hex(shader_cache.payload.data(), shader_cache.payload.size());
-  if (actual != expected) {
-    shader_cache.error = "embedded-payload-sha256";
-    return false;
-  }
-  const uint8_t* p = shader_cache.payload.data();
-  const size_t n = shader_cache.payload.size();
-  if (n < 16 || std::memcmp(p, "NRSP", 4) || u32(p + 4) != 2) {  // Version 2: variants (kind 2), no libraries.
-    shader_cache.error = "embedded-payload";
-    return false;
-  }
-  const uint32_t index_bytes = u32(p + 8), files = u32(p + 12);
-  size_t at = 16;
-  if (index_bytes > n - at) { shader_cache.error = "embedded-index"; return false; }
-  text.assign(reinterpret_cast<const char*>(p + at), index_bytes);
-  at += (index_bytes + 3) & ~size_t(3);
-  struct Record { uint32_t kind, offset, size; std::string name; };
-  std::vector<Record> records;
-  for (uint32_t i = 0; i < files; ++i) {
-    if (at + 16 > n) { shader_cache.error = "embedded-files"; return false; }
-    Record r{u32(p + at), u32(p + at + 8), u32(p + at + 12), {}};
-    const uint32_t name = u32(p + at + 4);
-    at += 16;
-    if (name > 64 || at + name > n || (r.kind != 0 && r.kind != 2)) { shader_cache.error = "embedded-files"; return false; }
-    r.name.assign(reinterpret_cast<const char*>(p + at), name);
-    at += (name + 3) & ~size_t(3);
-    records.push_back(std::move(r));
-  }
-  for (const auto& r : records) {
-    if (r.offset > n - at || r.size > n - at - r.offset) { shader_cache.error = "embedded-blob"; return false; }
-    (r.kind ? shader_cache.variants : shader_cache.dxil)[r.name] = std::span<const uint8_t>(p + at + r.offset, r.size);
-  }
-  shader_cache.index = "embedded";
-  shader_cache.record = fmt::format("\"embedded\":true,\"container_bytes\":{},\"payload_bytes\":{},"
-                                    "\"payload_sha256\":\"{}\",\"dxil\":{},\"variants\":{}", size, payload_bytes,
-                                    actual, shader_cache.dxil.size(), shader_cache.variants.size());
-  return true;
-}
-
-void LoadShaderCache() {
+// The package of the session's format (package.h) and its index: the line
+// of the format's binaries, the contract of the SPIR-V package, and one line
+// per shader (stage, name, hash of the virtual part then the microcode,
+// virtual size, textures, spec mask and, in SPIR-V, the SHA-256 of the module).
+void LoadShaderCache(ShaderFormat format) {
   // REX_NATIVE_SHADER_INDEX is not read; a run that sets it only records that.
   const auto started = std::chrono::steady_clock::now();
-  std::string text;
-  if (!UnpackShaderCache(text)) return;
+  shader_cache.format = format;
+  shader_cache.package = EmbeddedShaderPackage(format, shader_cache.error);
+  if (!shader_cache.package) return;
+  const ShaderPackage& package = *shader_cache.package;
+  const bool spirv = format == ShaderFormat::kSpirv;
+  shader_cache.record = fmt::format("\"embedded\":true,\"container_bytes\":{},\"payload_bytes\":{},"
+                                    "\"payload_sha256\":\"{}\",\"{}\":{},\"variants\":{}", package.container_bytes,
+                                    package.payload.size(), package.payload_sha256, spirv ? "spirv" : "dxil",
+                                    package.modules.size(), package.variants.size());
   if (const char* path = std::getenv("REX_NATIVE_SHADER_INDEX"); path && *path)
     shader_cache.record += ",\"index_variable_ignored\":true";
+  const std::string& text = package.index;
   size_t at = 0;
-  bool format = false;  // Index format 4 (identification only by hash).
+  bool format4 = false, modules = false;  // Index format 4 (identification only by hash).
   while (at < text.size()) {
     size_t end = text.find('\n', at);
     if (end == std::string::npos) end = text.size();
@@ -232,20 +159,22 @@ void LoadShaderCache() {
       s = t + 1;
     }
     at = next;
-    if (f.size() == 2 && f[0] == "format") { format = f[1] == "4"; continue; }
-    if (f.size() == 2 && f[0] == "dxil") { shader_cache.dxil_dir = f[1]; continue; }
-    // Stage, name, hash (virtual part then microcode), virtual size, textures, spec mask.
-    if (!format || f.size() != 6 || (f[0] != "vs" && f[0] != "ps")) continue;
+    if (f.size() == 2 && f[0] == "format") { format4 = f[1] == "4"; continue; }
+    if (f.size() == 2 && f[0] == (spirv ? "spirv" : "dxil")) { modules = true; continue; }
+    if (f.size() == 2 && f[0] == "contract") { shader_cache.contract = f[1]; continue; }
+    if (!format4 || f.size() != (spirv ? 7u : 6u) || (f[0] != "vs" && f[0] != "ps")) continue;
     CachedShader shader;
     shader.name = f[1];
     shader.virtual_size = uint32_t(std::stoul(f[3]));
     shader.textures = f[4] == "1";
     shader.spec_mask = uint32_t(std::stoul(f[5]));
+    if (spirv) shader.spirv_sha256 = f[6];
     if (shader_cache.by_hash[f[0] == "vs"].emplace(std::stoull(f[2], nullptr, 16), std::move(shader)).second)
       ++shader_cache.entries;
   }
-  shader_cache.loaded = !shader_cache.dxil_dir.empty() && shader_cache.entries;
-  if (!shader_cache.loaded) shader_cache.error = format ? "index-empty" : "index-format";
+  shader_cache.loaded = modules && shader_cache.entries;
+  if (!shader_cache.loaded) shader_cache.error = format4 ? "index-empty" : "index-format";
+  if (spirv) shader_cache.record += fmt::format(",\"contract\":\"{}\"", shader_cache.contract);
   for (auto& shaders : shader_cache.by_hash)
     for (auto& [hash, shader] : shaders) shader_cache.by_name.emplace(shader.name, &shader);
   host::Record("native-d3d-shader-cache", fmt::format(
@@ -254,29 +183,35 @@ void LoadShaderCache() {
           std::chrono::steady_clock::now() - started).count()));
 }
 
-std::shared_ptr<const std::vector<uint8_t>> LoadDxil(CachedShader& shader) {
+std::shared_ptr<const std::vector<uint8_t>> LoadModule(CachedShader& shader) {
   std::lock_guard lock(shader_cache.mutex);
-  if (shader.dxil) return shader.dxil;
-  auto it = shader_cache.dxil.find(shader.name);  // The embedded cache.
-  if (it == shader_cache.dxil.end()) return nullptr;
-  shader.dxil = std::make_shared<std::vector<uint8_t>>(it->second.begin(), it->second.end());
-  return shader.dxil;
+  if (shader.module) return shader.module;
+  auto it = shader_cache.package->modules.find(shader.name);  // The embedded cache.
+  if (it == shader_cache.package->modules.end()) return nullptr;
+  auto module = DecodeShaderModule(*shader_cache.package, it->second);
+  if (module.empty()) return nullptr;
+  // The decoded SPIR-V is the module spirv-val checked in the build.
+  if (shader_cache.format == ShaderFormat::kSpirv && Sha256Hex(module.data(), module.size()) != shader.spirv_sha256)
+    return nullptr;
+  shader.module = std::make_shared<const std::vector<uint8_t>>(std::move(module));
+  return shader.module;
 }
 
-// DXIL of a cached shader for the spec constants of the draw: value 0
-// takes the DXIL compiled with the stub, another value inside the mask the
-// variant the build linked, copied from the package once.
+// The module of a cached shader for the spec constants of the draw. In
+// DXIL, value 0 takes the DXIL compiled with the stub and another value inside
+// the mask the variant the build linked, copied from the package once. A
+// SPIR-V module serves every value.
 std::shared_ptr<const std::vector<uint8_t>> LoadShader(CachedShader& shader, uint32_t spec, std::string& error) {
   spec &= shader.spec_mask;
-  if (!spec) {
-    auto dxil = LoadDxil(shader);
-    if (!dxil) error = "dxil-unreadable";
-    return dxil;
+  if (!spec || shader_cache.format == ShaderFormat::kSpirv) {
+    auto module = LoadModule(shader);
+    if (!module) error = "module-unreadable";
+    return module;
   }
   std::lock_guard lock(shader_cache.mutex);
   if (auto it = shader.linked.find(spec); it != shader.linked.end()) return it->second;
-  auto found = shader_cache.variants.find(fmt::format("{}+spec{}", shader.name, spec));  // The embedded cache.
-  if (found == shader_cache.variants.end()) {
+  auto found = shader_cache.package->variants.find(fmt::format("{}+spec{}", shader.name, spec));  // The embedded cache.
+  if (found == shader_cache.package->variants.end()) {
     error = "variant-missing";
     return nullptr;
   }

@@ -62,7 +62,7 @@ extern std::atomic<uint32_t> clip_plane_records;  // The first draws with user c
 struct StateKey {
   std::array<uint32_t, 5> targets{};  // +12440..+12456: RT0..RT3 and depth headers.
   bool depth_only = false;
-  uint32_t topology = 0;
+  Topology topology = Topology::kTriangleList;
   bool operator==(const StateKey& o) const {
     return targets == o.targets && depth_only == o.depth_only && topology == o.topology;
   }

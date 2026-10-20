@@ -127,6 +127,31 @@ foreach ($name in 'fmt', 'dxc-bin', 'smol-v', 'xxHash', 'zstd') {
 
 The build translates the game's shaders with the XenosRecomp fork in `tools/xenosrecomp/`, compiles them with DXC, and embeds the result in `broken_bond.exe`, so no shader compiler runs during play. The first build translates every shader of `xeshader.sdb` and takes several minutes; `build/shader-store` keeps the results, and later builds reuse them while the game files, the fork, and DXC do not change. The shader cache derives from your game files and stays out of Git.
 
+### Native Vulkan
+
+To include Vulkan alongside native Direct3D 12, initialize Plume's pinned Vulkan
+dependencies and supply `spirv-val` from a Vulkan SDK or SPIRV-Tools build:
+
+```powershell
+git -C out/plume submodule update --init contrib/volk contrib/Vulkan-Headers contrib/VulkanMemoryAllocator
+./scripts/build-game-native.ps1 -PlumeSource out/plume `
+  -XenosRecompThirdparty tools/xenosrecomp/thirdparty -Backend both `
+  -SpirvVal C:/VulkanSDK/<version>/Bin/spirv-val.exe -Tests
+./scripts/run-game.ps1 -Renderer native -NativeBackend vulkan
+```
+
+`-Backend vulkan` builds only the Vulkan native backend; `-Backend d3d12` is the
+build default. Both retain the Xenos plugin and `renderer = "xenos"` as the
+runtime default. Native API selection is independent of the SDK's Xenos backend.
+An unavailable native backend fails explicitly instead of silently switching APIs.
+
+The Vulkan build compiles and validates SPIR-V from Broken Bond's own shader
+database and embeds it with the renderer's host passes. `-Tests` builds and runs
+the host resource, submission, failure, shader package, draw, instancing and
+presentation checks. These tests do not execute the game. Their journals stay
+under `build/native/backend-test-results/`; each CTest invocation creates new
+paths.
+
 ### Pipeline list
 
 The list of pipelines compiled at startup, `src/gpu/shaders/pipeline_cache.inc`, is optional and also stays out of Git, because it is generated from local play sessions. Without it, the build succeeds, and each pipeline compiles the first time it appears, with a short pause.

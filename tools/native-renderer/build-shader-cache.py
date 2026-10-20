@@ -2,6 +2,7 @@
 directory, git-ignored with it).
 
 Usage: python -I build-shader-cache.py <xeshader.sdb> <XenosRecomp.exe> <shader_common.h> <dxc.exe> <out> [<store>]
+       [--spirv-val <spirv-val.exe> --smolv-encode <smolv-encode.exe> --passes <app/src/gpu/backend>]
 
 Runs the chain of the shader cache on the SDB of the game: the containers
 (extract-sdb-containers.py), the translation of each one by the XenosRecomp fork of
@@ -10,12 +11,21 @@ spec constants (build-sdb-shader-libraries.py), the variants those libraries giv
 the values the draw asks for, linked here (build-sdb-shader-variants.py), the index,
 format 4, identification only by hash (build-native-shader-index.py) and the package that
 app/src/gpu/shaders/shader_cache_data.cpp embeds (build-embedded-shader-cache.py).
-Writes <out>/shader_cache.bin and <out>/shader_cache.json; the intermediate steps go
-to <out>/work, replaced on each run. Any shader that does not translate or compile
-fails the build. With <store> (a folder kept across builds, outside the build directory),
-the translation, DXIL, library and variants of each shader are reused when their inputs
-did not change (shader_store.py); the package is the same bytes either way.
+With --spirv-val, --smolv-encode and --passes (a build with the Vulkan backend), the
+SPIR-V of each shader too, validated and checked against the Vulkan layout
+(build-sdb-shader-spirv.py), and the SPIR-V of the renderer's own passes, FXAA and
+the SDK's output effects from the backend folder (build-pass-spirv.py), encoded by
+smol-v (smolv-encode.cpp), described by the manifest (build-shader-manifest.py) and
+packaged on their own. Writes
+<out>/shader_cache.bin and <out>/shader_cache.json, and with SPIR-V
+<out>/shader_cache_spirv.bin and <out>/shader_manifest.json; the intermediate steps
+go to <out>/work, replaced on each run. Any shader that does not translate, compile or
+validate, or breaks a check, fails the build. With <store> (a folder kept across
+builds, outside the build directory), the translation, DXIL, library, variants and
+SPIR-V of each shader are reused when their inputs did not change (shader_store.py);
+the packages are the same bytes either way.
 """
+import argparse
 import json
 import os
 import shutil
@@ -24,9 +34,19 @@ import sys
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-sdb, xenosrecomp, common, dxc, out = (Path(a).resolve() for a in sys.argv[1:6])
-store = ['--store', Path(sys.argv[6]).resolve()] if len(sys.argv) > 6 and sys.argv[6] else []
-for path in (sdb, xenosrecomp, common, dxc):
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ('sdb', 'xenosrecomp', 'common', 'dxc', 'out'):
+    parser.add_argument(name, type=Path)
+parser.add_argument('store', nargs='?', default='')
+parser.add_argument('--spirv-val', type=Path)
+parser.add_argument('--smolv-encode', type=Path)
+parser.add_argument('--passes', type=Path, help='the backend folder of the passes (build-pass-spirv.py)')
+args = parser.parse_args()
+if len({bool(args.spirv_val), bool(args.smolv_encode), bool(args.passes)}) != 1:
+    sys.exit('build-shader-cache: SPIR-V needs --spirv-val, --smolv-encode and --passes')
+sdb, xenosrecomp, common, dxc, out = (p.resolve() for p in (args.sdb, args.xenosrecomp, args.common, args.dxc, args.out))
+store = ['--store', Path(args.store).resolve()] if args.store else []
+for path in (sdb, xenosrecomp, common, dxc, *([args.spirv_val, args.smolv_encode] if args.spirv_val else [])):
     if not path.is_file():
         sys.exit(f'build-shader-cache: missing {path}')
 work = out / 'work'
@@ -61,15 +81,41 @@ run('build-sdb-shader-cache.py', containers / 'containers', work / 'per-shader',
 run('build-sdb-shader-libraries.py', work / 'per-shader', work / 'libraries', '--jobs', jobs, '--dxc', dxc, *store)
 run('build-sdb-shader-variants.py', work / 'libraries', work / 'variants', '--jobs', jobs, '--dxc', dxc,
     '--values', SPEC_VALUES, *store)
-bad = {**failures(work / 'per-shader' / 'report.json'), **failures(work / 'libraries' / 'report.json'),
-       **failures(work / 'variants' / 'report.json')}
+steps = ['per-shader', 'libraries', 'variants']
+if args.spirv_val:
+    run('build-sdb-shader-spirv.py', work / 'per-shader', work / 'spirv', '--jobs', jobs, '--dxc', dxc,
+        '--spirv-val', args.spirv_val.resolve(), '--masks', work / 'libraries' / 'report.json', *store)
+    run('build-pass-spirv.py', args.passes.resolve(), work / 'passes', '--dxc', dxc,
+        '--spirv-val', args.spirv_val.resolve(), *store)
+    steps += ['spirv', 'passes']
+bad = {k: v for step in steps for k, v in failures(work / step / 'report.json').items()}
 if bad:
     sys.exit(f'build-shader-cache: shaders that did not build: {bad}')
+manifest = out / 'shader_manifest.json'
+encoded = []
+if args.spirv_val:
+    # The modules of the shaders and of the passes, each step into its smolv folder.
+    encoded = [work / step / 'smolv' for step in ('spirv', 'passes')]
+    listing = work / 'smolv.tsv'
+    with listing.open('w', encoding='utf-8') as lines:
+        for folder in encoded:
+            folder.mkdir()
+            for spv in sorted((folder.parent / 'spirv').glob('*.spv')):
+                lines.write(f'{spv}\t{folder / (spv.stem + ".smolv")}\n')
+    subprocess.run([str(args.smolv_encode.resolve()), str(listing)], check=True, stdout=subprocess.DEVNULL)
+    run('build-shader-manifest.py', work, manifest)
+else:  # A build without the Vulkan backend embeds no SPIR-V: no package of an earlier build stays.
+    for stale in (out / 'shader_cache_spirv.bin', manifest):
+        stale.unlink(missing_ok=True)
 run('build-native-shader-index.py', containers / 'containers', work / 'per-shader', work / 'index', work / 'libraries',
-    work / 'variants')
-run('build-embedded-shader-cache.py', work / 'index' / 'index.tsv', out)
+    work / 'variants', *encoded[:1])
+run('build-embedded-shader-cache.py', work / 'index' / 'index.tsv', out, *([manifest, encoded[1]] if encoded else []))
 identity = json.loads((out / 'shader_cache.json').read_text(encoding='utf-8'))
 reused = {step: {kind: n for kind, n in json.loads((work / step / 'report.json').read_text(encoding='utf-8'))['store'].items()
-                 if kind != 'root'} for step in ('per-shader', 'libraries', 'variants')}
+                 if kind != 'root'} for step in steps}
+spirv = identity.get('spirv')
 print(f"shader cache: {identity['entries']} shaders, {identity['variant_files']} variants, "
-      f"payload {identity['payload_sha256'][:16]}, store {json.dumps(reused)}")
+      f"payload {identity['payload_sha256'][:16]}" +
+      (f", SPIR-V payload {spirv['payload_sha256'][:16]} ({spirv['compressed_bytes']} bytes packed, "
+       f"{spirv['passes']} passes), contract {spirv['manifest']['contract_sha256'][:16]}" if spirv else '') +
+      f", store {json.dumps(reused)}")

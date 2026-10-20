@@ -1,9 +1,9 @@
 #pragma once
 
 // Shaders of the D3D boundary (shaders.cpp): the XenosRecomp cache embedded in
-// the build with the spec constant variants linked there, the bound shader
-// objects and their identification against the cache, and the registry of the
-// objects by their birth.
+// the build (package.h), in the binary format of the session's API, the bound
+// shader objects and their identification against the cache, and the registry
+// of the objects by their birth.
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -17,6 +17,8 @@
 #include <vector>
 #include <windows.h>
 #include <rex/ppc/context.h>
+#include "gpu/backend/contracts.h"
+#include "gpu/shaders/package.h"
 
 namespace gpu {
 struct CachedShader {
@@ -32,21 +34,26 @@ struct CachedShader {
   // (fetch constant, fetch dimension) of each texture fetch, distinct.
   std::vector<std::pair<uint32_t, uint32_t>> fetch_constants;
   std::vector<uint32_t> code;
-  std::shared_ptr<const std::vector<uint8_t>> dxil;
-  // The variants linked in the build, by spec constants, taken from the package on first use.
+  // The base module in the session's format (LoadModule): the DXIL compiled
+  // with the stub, or the SPIR-V module; spirv_sha256 is the hash its decoded
+  // bytes must have (the SPIR-V index).
+  std::shared_ptr<const std::vector<uint8_t>> module;
+  std::string spirv_sha256;
+  // The DXIL variants linked in the build, by spec constants, taken from the package on first use.
   std::unordered_map<uint32_t, std::shared_ptr<const std::vector<uint8_t>>> linked;
 };
 struct ShaderCache {
   std::once_flag once;
   bool loaded = false;
-  std::string index, dxil_dir, error;
+  std::string error;
   std::mutex mutex;
   std::unordered_map<uint64_t, CachedShader> by_hash[2];  // 0 PS, 1 VS; key: virtual part then microcode
   size_t entries = 0;
-  // The package embedded in the build, decompressed once: the DXIL of each
-  // shader name and its spec constant variants, by "<name>+spec<value>".
-  std::vector<uint8_t> payload;
-  std::unordered_map<std::string, std::span<const uint8_t>> dxil, variants;
+  // The package of the session's format embedded in the build, decompressed
+  // once, and the contract of the SPIR-V one (its index).
+  ShaderFormat format = ShaderFormat::kDxil;
+  const ShaderPackage* package = nullptr;
+  std::string contract;
   std::atomic<uint64_t> variants_loaded{0};  // Variants taken from the package.
   std::string record;  // JSON fields of the load, for the first draw record.
   // The shaders by cache name (the names of the pipeline keys), for
@@ -97,14 +104,20 @@ struct ShaderEntry {
 };
 // The record of a bound shader object (container, metadata, microcode).
 std::string ShaderRecord(uint8_t* base, uint32_t object, bool vertex);
-void LoadShaderCache();
-std::shared_ptr<const std::vector<uint8_t>> LoadDxil(CachedShader& shader);
-// DXIL of a cached shader for the spec constants of the draw. A shader
-// whose body uses spec constants has a mask in the index; a value inside it
-// takes the variant the build linked (build-sdb-shader-variants.py, the
-// library of the shader with another exporting g_SpecConstants() with that
-// value), and value 0 the DXIL compiled with the stub. A value without a
-// variant fails ("variant-missing"): the draw is skipped and counted.
+// Loads the package of the format (the session's API, ShaderFormatOf), once.
+void LoadShaderCache(ShaderFormat format);
+// The base module of a cached shader in the session's format; a SPIR-V
+// module is decoded and checked against the SHA-256 of its index line. Null
+// when it does not decode or check.
+std::shared_ptr<const std::vector<uint8_t>> LoadModule(CachedShader& shader);
+// The module of a cached shader for the spec constants of the draw. A shader
+// whose body uses spec constants has a mask in the index. In DXIL, a value
+// inside it takes the variant the build linked (build-sdb-shader-variants.py,
+// the library of the shader with another exporting g_SpecConstants() with that
+// value), and value 0 the DXIL compiled with the stub; a value without a
+// variant fails ("variant-missing"): the draw is skipped and counted. A SPIR-V
+// module is the same for every value: the pipeline takes it as the
+// specialization constant (ShaderRef::spec_value).
 std::shared_ptr<const std::vector<uint8_t>> LoadShader(CachedShader& shader, uint32_t spec, std::string& error);
 // Transparency antialiasing (option transparency_antialiasing). An
 // alpha-tested pixel shader drawn into a

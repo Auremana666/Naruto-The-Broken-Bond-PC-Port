@@ -7,6 +7,7 @@
 // order with tasks pending (a pending Run fails, the translator is joined).
 // Usage: native_engine_translation_test <new output.jsonl>
 #include "gpu/backend/dispatcher.h"
+#include "gpu/backend/tests/test_backend.h"
 #include "gpu/diagnostics/sampler.h"
 #include <chrono>
 #include <filesystem>
@@ -72,7 +73,7 @@ int main(int argc, char** argv) {
   };
   Dispatcher d(true, true);
   std::string evidence;
-  const bool ready = d.Initialize(evidence);
+  const bool ready = d.Initialize(evidence, TestRenderMode());
   line("initialize", ready && d.Deferred() && !d.OnTranslator(), evidence);
   if (!ready) return 4;
   // FIFO: captures and operations from this thread reach the owner in the order given.

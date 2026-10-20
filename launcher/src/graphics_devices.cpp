@@ -9,9 +9,44 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi.h>
+#if defined(BROKENBOND_LAUNCHER_NATIVE_VULKAN)
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+#endif
 #endif
 
-const std::vector<std::string>& GraphicsDevices() {
+const std::vector<std::string>& GraphicsDevices(bool vulkan) {
+#if defined(BROKENBOND_LAUNCHER_NATIVE_VULKAN)
+  if (vulkan) {
+    static const std::vector<std::string> devices = [] {
+      std::vector<std::string> names;
+      HMODULE loader = LoadLibraryW(L"vulkan-1.dll");
+      if (!loader) return names;
+      auto proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(loader, "vkGetInstanceProcAddr"));
+      auto create = proc ? reinterpret_cast<PFN_vkCreateInstance>(proc(nullptr, "vkCreateInstance")) : nullptr;
+      VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion = VK_API_VERSION_1_2;
+      VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; info.pApplicationInfo = &app;
+      VkInstance instance{};
+      if (create && create(&info, nullptr, &instance) == VK_SUCCESS) {
+        auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(proc(instance, "vkEnumeratePhysicalDevices"));
+        auto properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(proc(instance, "vkGetPhysicalDeviceProperties"));
+        auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(proc(instance, "vkDestroyInstance"));
+        uint32_t count = 0;
+        if (enumerate(instance, &count, nullptr) == VK_SUCCESS) {
+          std::vector<VkPhysicalDevice> physical(count);
+          if (enumerate(instance, &count, physical.data()) == VK_SUCCESS) for (auto device : physical) {
+            VkPhysicalDeviceProperties p{}; properties(device, &p);
+            if (p.apiVersion >= VK_API_VERSION_1_2 &&
+                std::find(names.begin(), names.end(), p.deviceName) == names.end()) names.emplace_back(p.deviceName);
+          }
+        }
+        destroy(instance, nullptr);
+      }
+      FreeLibrary(loader); return names;
+    }();
+    return devices;
+  }
+#endif
   static const std::vector<std::string> devices = [] {
     std::vector<std::string> names;
 #ifdef _WIN32

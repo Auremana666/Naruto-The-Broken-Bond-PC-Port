@@ -76,7 +76,8 @@ struct DeclUsageLocation
     uint32_t location;
 };
 
-// NOTE: These are specialized Vulkan locations for Unleashed Recompiled. Change as necessary. Likely not going to work with other games.
+// Stable vertex input locations shared by translation and the native renderer's
+// shader manifest. Broken Bond also uses COLOR2 and COLOR3.
 static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
 {
     { DeclUsage::Position, 0, 0 },
@@ -96,6 +97,10 @@ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
     { DeclUsage::TexCoord, 6, 14 },
     { DeclUsage::TexCoord, 7, 15 },
     { DeclUsage::Position, 1, 15 },
+#ifdef NARUTO_RECOMP
+    { DeclUsage::Color, 2, 16 },
+    { DeclUsage::Color, 3, 17 },
+#endif
 };
 
 static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =

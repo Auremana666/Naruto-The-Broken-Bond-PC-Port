@@ -20,7 +20,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <dxgiformat.h>
 #include <array>
 #include <chrono>
 #include <atomic>
@@ -394,16 +393,16 @@ std::string StartRequestSha(const DrawRequest& r) {
     if (n) h.Update(p, n);
   };
   auto put_value = [&](const auto& v) { put(&v, sizeof(v)); };
-  put(r.vs_key.data(), r.vs_key.size());
-  put(r.ps_key.data(), r.ps_key.size());
-  put(r.vs_dxil ? r.vs_dxil->data() : nullptr, r.vs_dxil ? r.vs_dxil->size() : 0);
-  put(r.ps_dxil ? r.ps_dxil->data() : nullptr, r.ps_dxil ? r.ps_dxil->size() : 0);
+  put(r.vs.key.data(), r.vs.key.size());
+  put(r.ps.key.data(), r.ps.key.size());
+  put(r.vs.bytes ? r.vs.bytes->data() : nullptr, r.vs.bytes ? r.vs.bytes->size() : 0);
+  put(r.ps.bytes ? r.ps.bytes->data() : nullptr, r.ps.bytes ? r.ps.bytes->size() : 0);
   static const std::vector<VertexElement> no_elements;
   const auto& elements = r.elements ? *r.elements : no_elements;
   put_value(elements.size());
   for (const auto& e : elements) {
     put(e.semantic, std::strlen(e.semantic));
-    const uint32_t fields[4] = {e.semantic_index, e.format, e.slot, e.offset};
+    const uint32_t fields[4] = {e.semantic_index, uint32_t(e.format), e.slot, e.offset};
     put_value(fields);
   }
   put_value(r.streams.size());
@@ -412,7 +411,7 @@ std::string StartRequestSha(const DrawRequest& r) {
     put(s.data.data(), s.data.size());
   }
   put(r.indices.data(), r.indices.size());
-  const uint32_t draw_words[] = {r.index32, r.index_count, r.topology, uint32_t(r.base_vertex), r.depth_key,
+  const uint32_t draw_words[] = {r.index32, r.index_count, uint32_t(r.topology), uint32_t(r.base_vertex), r.depth_key,
                                  r.blend_control, r.color_mask, r.alpha_to_coverage, r.depth_enable, r.depth_write,
                                  r.depth_func, r.stencil_enable, r.stencil_front, r.stencil_back, r.stencil_ref,
                                  r.stencil_read_mask, r.stencil_write_mask, r.cull_front, r.cull_back, r.front_ccw};
@@ -425,9 +424,11 @@ std::string StartRequestSha(const DrawRequest& r) {
   put_value(r.scissor);
   put_value(r.textures.size());
   for (const auto& t : r.textures) {
-    const uint32_t words[] = {t.reg, t.key, t.resolved, t.format, t.width, t.height, t.levels, t.component_mapping,
-                              t.filter, t.address_u, t.address_v, t.address_w, t.max_anisotropy};
+    const uint32_t words[] = {t.reg, t.key, t.resolved, uint32_t(t.format), t.width, t.height, t.levels,
+                              uint32_t(t.min_filter), uint32_t(t.mag_filter), uint32_t(t.mip_filter), t.anisotropic,
+                              uint32_t(t.address_u), uint32_t(t.address_v), uint32_t(t.address_w), t.max_anisotropy};
     put_value(words);
+    put_value(t.component_mapping);
     put_value(t.layout);
     put_value(t.version);
     const float lods[] = {t.lod_bias, t.min_lod, t.max_lod};
@@ -449,15 +450,16 @@ std::string StartCopiesJson(const DrawRequest& r, uint64_t fence) {
     for (const auto& level : t.data) bytes += level.size();
     textures += fmt::format("{}{{\"reg\":{},\"key\":{},\"format\":{},\"size\":[{},{}],\"levels\":{},\"layout\":{},"
                             "\"version\":{},\"levels_sent\":{},\"bytes_sent\":{}}}", textures.empty() ? "" : ",", t.reg,
-                            t.key, t.format, t.width, t.height, t.levels, t.layout, t.version, t.data.size(), bytes);
+                            t.key, uint32_t(t.format), t.width, t.height, t.levels, t.layout, t.version, t.data.size(),
+                            bytes);
   }
   return fmt::format("{{\"fence\":{},\"vs_key\":\"{}\",\"ps_key\":\"{}\",\"vs_dxil_sha256\":\"{}\",\"ps_dxil_sha256\":\"{}\","
                      "\"streams\":[{}],\"indices\":{{\"bytes\":{},\"sha256\":\"{}\"}},\"vs_constants_sha256\":\"{}\","
                      "\"ps_constants_sha256\":\"{}\",\"shared_constants_sha256\":\"{}\",\"textures\":[{}],"
                      "\"owned_until_fence\":\"engine submission keeps the upload of these copies until the fence\"}}",
-                     fence, r.vs_key, r.ps_key,
-                     r.vs_dxil ? Sha256Hex(r.vs_dxil->data(), r.vs_dxil->size()) : "",
-                     r.ps_dxil ? Sha256Hex(r.ps_dxil->data(), r.ps_dxil->size()) : "", streams,
+                     fence, r.vs.key, r.ps.key,
+                     r.vs.bytes ? Sha256Hex(r.vs.bytes->data(), r.vs.bytes->size()) : "",
+                     r.ps.bytes ? Sha256Hex(r.ps.bytes->data(), r.ps.bytes->size()) : "", streams,
                      r.indices.size(), Sha256Hex(r.indices.data(), r.indices.size()),
                      Sha256Hex(r.vs_constants.data(), r.vs_constants.size()),
                      Sha256Hex(r.ps_constants.data(), r.ps_constants.size()),
@@ -832,15 +834,15 @@ void NoteStartDraw(PPCContext& ctx, uint8_t* base, uint32_t dev, const StartInpu
   const auto& el = r.elements ? *r.elements : no_elements;
   need(el.size() == 2 && r.streams.size() == 1 && in.stream_fetch.size() == 1 && in.stream_fetch[0] == 95 &&
        r.streams[0].stride == 16 && in.stream0[2] == 2 && std::string_view(el[0].semantic) == "POSITION" &&
-       !el[0].semantic_index && el[0].format == DXGI_FORMAT_R32G32_FLOAT && !el[0].slot &&
+       !el[0].semantic_index && el[0].format == VertexFormat::kR32G32Float && !el[0].slot &&
        !el[0].offset && std::string_view(el[1].semantic) == "TEXCOORD" &&
-       !el[1].semantic_index && el[1].format == DXGI_FORMAT_R32G32_FLOAT && !el[1].slot &&
+       !el[1].semantic_index && el[1].format == VertexFormat::kR32G32Float && !el[1].slot &&
        el[1].offset == 8, "vertex-layout");
   need(in.stream0[1] >= 1024 && d.vertices.size() == 1024 && d.indices.size() == 192, "extent");
   need(f0[0] == 0x08000002 && (f0[1] & 0xFFF) == 2 && f0[2] == 0x001FE3FF && f0[3] == 0x00A80248 && f0[4] == 3 &&
        f0[5] == 0x218, "fetch0");
   need(r.textures.size() == 1 && !r.textures[0].reg && !r.textures[0].resolved &&
-       r.textures[0].format == DXGI_FORMAT_R8_UNORM && r.textures[0].width == 1024 && r.textures[0].height == 256 &&
+       r.textures[0].format == TextureFormat::kR8Unorm && r.textures[0].width == 1024 && r.textures[0].height == 256 &&
        r.textures[0].key == (f0[1] & 0xFFFFF000u), "atlas");
   need(in.depth_control == 0x00700264 && in.blend_control == 0x07000706 && in.color_control == 0xAA000004 &&
        in.mode == 0x18000 && in.vte == 0x43F && in.color_mask == 0xF, "state");

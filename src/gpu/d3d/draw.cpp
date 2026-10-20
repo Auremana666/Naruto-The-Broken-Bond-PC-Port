@@ -404,7 +404,7 @@ const char* UncoveredDrawField(const DrawCapture& c, const Reg& reg, const DrawR
   if ((mode >> 19) & 1) return "PA_SU_SC_MODE_CNTL.provoking_vtx_last";
   if ((mode >> 20) & 1) return "PA_SU_SC_MODE_CNTL.persp_corr_dis";
   // The PSO has no strip cut value: a reset index only matters for strips.
-  if (((mode >> 21) & 1) && request.topology == 5) return "PA_SU_SC_MODE_CNTL.multi_prim_ib_ena";
+  if (((mode >> 21) & 1) && request.topology == Topology::kTriangleStrip) return "PA_SU_SC_MODE_CNTL.multi_prim_ib_ena";
   // Window offset (0x2080, index 16 of the 0x2000 block): not applied.
   if (reg(0x2010) & 0x7FFF7FFF) return "PA_SC_WINDOW_OFFSET";
   // PA_CL_VTE_CNTL (0x2206): the six enables are guarded with the transform;
@@ -729,7 +729,7 @@ void OwnDrawBody(PPCContext& ctx, uint8_t* base, bool indexed, std::shared_ptr<I
         "\"textures\":[{}],\"texture_uploads\":{},\"texture_binding_reuses\":{},\"discarded_bytes\":{},\"engine\":{}", t.n, lr,
         thread, primitive, capture.base_vertex, capture.start_index, capture.start_vertex, capture.index_count,
         t.request.index32, t.index_record, t.max_index, t.shaders_record, capture.layout->elements_record,
-        t.streams_record, t.vertex_record, t.state_record, t.request.ps_key, t.request.alpha_to_coverage,
+        t.streams_record, t.vertex_record, t.state_record, t.request.ps.key, t.request.alpha_to_coverage,
         shader_cache.variants_loaded.load(), t.textures_record, texture_uploads.load(), texture_binding_reuses.load(), capture.discarded,
         t.evidence));
   // Census of the draws with the START shaders and identification of
@@ -815,7 +815,10 @@ void CaptureDraw(PPCContext& ctx, uint8_t* base, bool indexed, InlineBuild* quad
   original_time.Stop();
   if (candidate) ReadStartAfter(base, *c.live);  // START entry after the original commit.
   profile::Timer shaders_time(profile::kDrawShaders);
-  std::call_once(shader_cache.once, LoadShaderCache);
+  std::call_once(shader_cache.once, [] {  // The package of the session's API.
+    const auto* dispatcher = host::ActiveDispatcher();
+    LoadShaderCache(ShaderFormatOf(dispatcher ? dispatcher->Api() : RenderMode{}.api));
+  });
   StartPipelinePrecompileOnce();
   InlineGuardSink sink(saved);
   const DrawGuard guard{c, sink};
@@ -1043,13 +1046,15 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
                                                        sampler.name, TextureRecord(base, sampler.reg, false));
     }
   }
-  // The VS has no spec constants (its vertex fetch is decoded by the
-  // descriptors); the PS DXIL is chosen with the alpha test state below.
-  request.vs_key = vs_cached->name;
+  // The VS takes its base variant (spec 0: its vertex fetch is decoded by the
+  // descriptors); the PS variant is chosen with the alpha test state below.
+  request.vs.key = vs_cached->name;
+  request.vs.format = request.ps.format = shader_cache.format;
+  request.vs.spec_mask = vs_cached->spec_mask;
   profile::Timer load_time(profile::kDrawShaderLoad);
-  request.vs_dxil = LoadDxil(*vs_cached);
+  request.vs.bytes = LoadModule(*vs_cached);
   load_time.Stop();
-  if (!request.vs_dxil) guard("dxil-unreadable", shaders_record);
+  if (!request.vs.bytes) guard("vertex-shader-unavailable", shaders_record);
   // Indices: the bound index buffer, or start .. start + count - 1 for DrawVertices.
   // The draw's range of the index buffer is a buffer entry (BindBuffer):
   // bound on the GPU once hosted, read inline while on probation.
@@ -1288,8 +1293,8 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   streams_time.Stop();
   request.base_vertex = base_vertex + mesh_base;
   // D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST: the quad and the quad list of DrawVertices as a list.
-  if (c.primitive == 4 || quad || (c.primitive == 13 && !indexed)) request.topology = 4;
-  else if (c.primitive == 6) request.topology = 5;  // D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
+  if (c.primitive == 4 || quad || (c.primitive == 13 && !indexed)) request.topology = Topology::kTriangleList;
+  else if (c.primitive == 6) request.topology = Topology::kTriangleStrip;  // D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
   else guard(fmt::format("primitive-uncovered-{}", c.primitive), shaders_record);
   // Constants: from the shadows, with their versions, as the capture took them.
   request.vs_constants_version = c.vs_constants_version;
@@ -1474,17 +1479,19 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   }
   std::string link_error;
   if (depth_only) {
-    request.ps_key = "depth-only";  // No PS, no color written (the alpha test has no PS to act on).
+    request.ps.key = "depth-only";  // No PS, no color written (the alpha test has no PS to act on).
   } else {
     {
       profile::Timer ps_load_time(profile::kDrawShaderLoad);
-      request.ps_dxil = LoadShader(*ps_cached, ps_spec, link_error);
+      request.ps.bytes = LoadShader(*ps_cached, ps_spec, link_error);
     }
-    if (!request.ps_dxil)
+    if (!request.ps.bytes)
       guard("pixel-shader-unavailable", shaders_record + fmt::format(",\"spec\":{},\"error\":\"{}\"", ps_spec,
                                                                      JsonText(link_error)));
-    request.ps_key = ps_spec & ps_cached->spec_mask ? fmt::format("{}+spec{}", ps_cached->name, ps_spec)
+    request.ps.key = ps_spec & ps_cached->spec_mask ? fmt::format("{}+spec{}", ps_cached->name, ps_spec)
                                                     : ps_cached->name;
+    request.ps.spec_mask = ps_cached->spec_mask;
+    request.ps.spec_value = ps_spec;
   }
   // Policy (a) of the START lot, selected by the current microcode.
   std::call_once(start_policy.once, LoadStartPolicy);
@@ -1504,14 +1511,15 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
                            start_policy.file_sha, selected, vs_patched_sha, vs_physical_sha, ps_physical_sha, ps_spec,
                            start_policy.vs_dxil_sha, start_policy.ps_dxil_sha);
     if (!selected) guard("start-policy-microcode-differs", "\"policy\":" + t.policy);
-    request.vs_dxil = start_policy.vs_dxil;
-    request.ps_dxil = start_policy.ps_dxil;
+    // The template shaders of the policy, unspecialized.
+    request.vs = ShaderRef{fmt::format("{}:{}", start_policy.name, vs_cached->name), ShaderStage::kVertex,
+                           ShaderFormat::kDxil, start_policy.vs_dxil};
+    request.ps = ShaderRef{fmt::format("{}:{}", start_policy.name, ps_cached->name), ShaderStage::kPixel,
+                           ShaderFormat::kDxil, start_policy.ps_dxil};
     // The template shaders of the policy read the typed formats.
     if (!layout.legacy_ok) guard("start-policy-vertex-format-uncovered", fmt::format("\"elements\":[{}]", elements_record));
     request.elements = layout.shared_legacy_elements;
     request.layout_id = layout.legacy_elements_id;
-    request.vs_key = fmt::format("{}:{}", start_policy.name, vs_cached->name);
-    request.ps_key = fmt::format("{}:{}", start_policy.name, ps_cached->name);
     if (start_policy.selections.fetch_add(1) == 0)
       host::Record("native-d3d-start-policy-selected", fmt::format(
           "\"lr\":{},\"guest_thread\":{},\"selection\":{},\"policy\":{}", lr, thread, t.policy, StartPolicyJson()));
@@ -1525,13 +1533,13 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
     std::string textures;
     for (const auto& t : request.textures)
       textures += fmt::format("{}{{\"reg\":{},\"key\":{},\"resolved\":{},\"cube\":{},\"format\":{},\"size\":[{},{}],"
-                              "\"levels\":{}}}", textures.empty() ? "" : ",", t.reg, t.key, t.resolved, t.cube, t.format,
-                              t.width, t.height, t.levels);
+                              "\"levels\":{}}}", textures.empty() ? "" : ",", t.reg, t.key, t.resolved, t.cube,
+                              uint32_t(t.format), t.width, t.height, t.levels);
     // The first draw of each (VS, PS, first texture): the descriptor, stream
     // endian and raw format of each element, the raw elements of its first
     // three vertices, the nonzero constants (VS, PS) and its texture records.
     std::string diag;
-    const std::string pair = fmt::format("{}|{}|{}", request.vs_key, request.ps_key,
+    const std::string pair = fmt::format("{}|{}|{}", request.vs.key, request.ps.key,
                                          request.textures.empty() ? 0u : request.textures[0].key);
     if (!quad && frame_trace.pairs.size() < 400 && frame_trace.pairs.insert(pair).second) {
       std::string fetch, vertices, texture_records;
@@ -1540,7 +1548,7 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
         uint32_t descriptor = 0;
         std::memcpy(&descriptor, &request.shared_constants[320 + 4 * i], 4);
         fetch += fmt::format("{}[{},{},{}]", i ? "," : "", descriptor, stream_endian[layout.fetch[i].slot],
-                             trace_elements[i].format);
+                             uint32_t(trace_elements[i].format));
       }
       // A hosted index or stream is read from guest memory, swapped as its upload was.
       auto guest_word = [&](uint32_t physical, uint32_t bytes, uint32_t endian, uint32_t& word) {
@@ -1561,7 +1569,9 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
           const auto& e = trace_elements[i];
           const auto& data = request.streams[e.slot].data;
           const int64_t at = (int64_t(v) + base_vertex) * request.streams[e.slot].stride + e.offset;
-          const uint32_t n = e.format == 3 ? 4 : e.format == 7 ? 3 : e.format == 17 ? 2 : 1;  // R32*_UINT
+          const uint32_t n = e.format == VertexFormat::kR32G32B32A32Uint ? 4
+                             : e.format == VertexFormat::kR32G32B32Uint ? 3
+                             : e.format == VertexFormat::kR32G32Uint ? 2 : 1;
           std::string w;
           for (uint32_t j = 0; j < n; ++j) {
             uint32_t word = 0;
@@ -1602,14 +1612,15 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
     TraceFrameOp("draw", fmt::format(
         "\"entry\":\"{}\",\"lr\":{},\"vs\":\"{}\",\"ps\":\"{}\",\"color_key\":{},\"depth_key\":{},\"depth_only\":{},"
         "\"depth\":[{},{},{}],\"stencil\":{},\"color_mask\":{},\"blend_control\":{},\"alpha_to_coverage\":{},"
-        "\"cull\":[{},{}],\"viewport\":[{},{},{},{},{},{}],\"scissor\":[{},{},{},{}],\"topology\":{},\"index_count\":{},"
-        "\"base_vertex\":{},\"textures\":[{}]{}", name, lr, request.vs_key, request.ps_key, request.color_key,
+        "\"cull\":[{},{}],\"viewport\":[{},{},{},{},{},{}],\"scissor\":[{},{},{},{}],\"topology\":\"{}\","
+        "\"index_count\":{},\"base_vertex\":{},\"textures\":[{}]{}", name, lr, request.vs.key, request.ps.key,
+        request.color_key,
         request.depth_key, request.depth_only, request.depth_enable, request.depth_write, request.depth_func,
         request.stencil_enable, request.color_mask, request.blend_control, request.alpha_to_coverage,
         request.cull_front, request.cull_back, JsonFloat(request.viewport[0]), JsonFloat(request.viewport[1]),
         JsonFloat(request.viewport[2]), JsonFloat(request.viewport[3]), JsonFloat(request.viewport[4]),
         JsonFloat(request.viewport[5]), request.scissor[0], request.scissor[1], request.scissor[2], request.scissor[3],
-        request.topology, request.index_count, request.base_vertex, textures, diag));
+        TopologyName(request.topology), request.index_count, request.base_vertex, textures, diag));
   }
   // The constants the capture took (the whole blocks for the quad and
   // the evidence draws, the pending groups for the batched draws), moved.
@@ -1620,7 +1631,8 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   if (quad) {  // Kept for the take, with the vertices (PostInlineQuad).
     t.quad_record = fmt::format("{},\"elements\":[{}],\"streams\":[{}],{},\"ps_key\":\"{}\",\"textures\":[{}],"
                                 "\"color_key\":{},\"depth_key\":{}", shaders_record.get(), elements_record, streams_text(),
-                                state_record.get(), request.ps_key, textures_record, request.color_key, request.depth_key);
+                                state_record.get(), request.ps.key, textures_record, request.color_key,
+                                request.depth_key);
     request.want_evidence = false;
     return t;
   }
@@ -1643,7 +1655,7 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   // prefetch take never skips, so a render-to-texture draw the title makes only
   // once (Broken Bond's 128x1 title color ramp) is not lost while its pipeline
   // compiles.
-  if (!evidence_draw && request.vs_key.find(':') == std::string::npos) request.pipeline_take = BatchedPipelineTake();
+  if (!evidence_draw && request.vs.key.find(':') == std::string::npos) request.pipeline_take = BatchedPipelineTake();
   if (evidence_draw) {
     uint64_t fence = 0;
     if (!dispatcher->Run([&request, &fence](Engine& engine, std::string& out) {
@@ -1723,20 +1735,24 @@ std::string QuadTraceFields(const PendingDraw& d, const InlineBuild& build, cons
   std::string textures;
   for (const auto& t : r.textures)
     textures += fmt::format("{}{{\"reg\":{},\"key\":{},\"resolved\":{},\"format\":{},\"size\":[{},{}],\"levels\":{},"
-                            "\"mapping\":{},\"filter\":{},\"address\":[{},{}],\"version\":{}}}",
-                            textures.empty() ? "" : ",", t.reg, t.key, t.resolved, t.format, t.width, t.height, t.levels,
-                            t.component_mapping, t.filter, t.address_u, t.address_v, t.version);
+                            "\"mapping\":\"{}\",\"filter\":\"{}/{}/{}{}\",\"address\":[\"{}\",\"{}\"],\"version\":{}}}",
+                            textures.empty() ? "" : ",", t.reg, t.key, t.resolved, uint32_t(t.format), t.width,
+                            t.height, t.levels, MappingName(t.component_mapping), FilterName(t.min_filter),
+                            FilterName(t.mag_filter), FilterName(t.mip_filter),
+                            t.anisotropic ? fmt::format("+anisotropic{}", t.max_anisotropy) : std::string(),
+                            AddressModeName(t.address_u), AddressModeName(t.address_v), t.version);
   std::string viewport;
   for (float f : r.viewport) viewport += fmt::format("{}{}", viewport.empty() ? "" : ",", JsonFloat(f));
   return fmt::format(
       "\"taken_by\":\"{}\",\"call\":{},\"build_thread\":{},\"take_thread\":{},\"lr\":{},\"vertices_at\":{},"
       "\"vertices\":[{}],\"vs\":\"{}\",\"ps\":\"{}\",\"color_key\":{},\"depth_key\":{},\"depth_only\":{},"
-      "\"color_mask\":{},\"blend_control\":{},\"depth\":[{},{},{}],\"stencil\":{},\"cull\":[{},{}],\"topology\":{},"
+      "\"color_mask\":{},\"blend_control\":{},\"depth\":[{},{},{}],\"stencil\":{},\"cull\":[{},{}],\"topology\":\"{}\","
       "\"index_count\":{},\"base_vertex\":{},\"viewport\":[{}],\"scissor\":[{},{},{},{}],\"textures\":[{}],"
       "\"vs_c0_3\":{},\"ps_c\":{},\"shared_words\":[{}],\"versions\":[{},{}],\"async\":{}",
-      by, d.call, d.thread, GuestThread(), d.lr, d.vertices, vertices, r.vs_key, r.ps_key, r.color_key, r.depth_key,
+      by, d.call, d.thread, GuestThread(), d.lr, d.vertices, vertices, r.vs.key, r.ps.key, r.color_key, r.depth_key,
       r.depth_only, r.color_mask, r.blend_control, r.depth_enable, r.depth_write, r.depth_func, r.stencil_enable,
-      r.cull_front, r.cull_back, r.topology, r.index_count, r.base_vertex, viewport, r.scissor[0], r.scissor[1],
+      r.cull_front, r.cull_back, TopologyName(r.topology), r.index_count, r.base_vertex, viewport, r.scissor[0],
+      r.scissor[1],
       r.scissor[2], r.scissor[3], textures, registers(r.vs_constants, 0, 4, false),
       registers(r.ps_constants, 0, 256, true), shared, r.vs_constants_version, r.ps_constants_version,
       r.pipeline_take != DrawRequest::PipelineTake::kSync);

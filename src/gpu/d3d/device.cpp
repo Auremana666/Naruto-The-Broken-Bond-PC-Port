@@ -239,8 +239,12 @@ REX_HOOK_RAW(sub_8219F990) {
       auto* dispatcher = gpu::host::ActiveDispatcher();
       return dispatcher && dispatcher->Drain(evidence);
     };
-    const auto result = device_owner->BlockOnFence(ctx.r4.u32, wait_idle, FenceWaitFailed, fields);
+    const auto* dispatcher = gpu::host::ActiveDispatcher();
+    const auto preparation_budget = std::chrono::seconds(
+        dispatcher && dispatcher->Api() == GraphicsApi::kVulkan ? 60 : 2);
+    const auto result = device_owner->BlockOnFence(ctx.r4.u32, wait_idle, FenceWaitFailed, fields, preparation_budget);
     if (result == DeviceOwner::FenceResult::Failed) {
+      TakeStopRequest(ctx);
       RecordPostedFailure("F708-BlockOnFence");
       StopInOrder(ctx, "F708-own-fence-unproved", 88);
     }

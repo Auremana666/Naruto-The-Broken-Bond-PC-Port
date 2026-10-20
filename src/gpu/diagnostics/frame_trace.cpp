@@ -133,20 +133,22 @@ void FrameTraceReadback(uint32_t front, uint64_t n) {
                            evidence.empty() ? "null" : evidence);
   }
   // The sampled copies of the diagnosed draws, every level, as their rows:
-  // trace-<swap>-tex-<key>-l<level>-f<DXGI format>-<w>x<h>-r<row bytes>.bin.
+  // trace-<swap>-tex-<key>-l<level>-f<format>-<w>x<h>-r<row bytes>.bin (the
+  // number of the TextureFormat, contracts.h: the DXGI one).
   std::string sampled;
   for (const auto& [key, levels] : frame_trace.sampled) {
     for (uint32_t level = 0; level < levels; ++level) {
       std::vector<uint8_t> rows;
-      uint32_t format = 0, width = 0, height = 0, row_bytes = 0;
+      TextureFormat format = TextureFormat::kUnknown;
+      uint32_t width = 0, height = 0, row_bytes = 0;
       std::string evidence;
       auto* dispatcher = host::ActiveDispatcher();
       const bool read = dispatcher && dispatcher->Run([&](Engine& engine, std::string& out) {
         return engine.ReadSampled(key, level, rows, format, width, height, row_bytes, out); }, evidence);
       std::string file;
       if (const char* dir = std::getenv("REX_NATIVE_FRAME_DIR"); read && dir && *dir) {
-        file = fmt::format("{}/trace-{:04}-tex-{}-l{}-f{}-{}x{}-r{}.bin", dir, n, key, level, format, width, height,
-                           row_bytes);
+        file = fmt::format("{}/trace-{:04}-tex-{}-l{}-f{}-{}x{}-r{}.bin", dir, n, key, level, uint32_t(format), width,
+                           height, row_bytes);
         std::FILE* out = std::fopen(file.c_str(), "wb");
         if (!out || std::fwrite(rows.data(), 1, rows.size(), out) != rows.size()) file = "write-failed";
         if (out) std::fclose(out);

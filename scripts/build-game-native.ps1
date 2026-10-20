@@ -6,6 +6,10 @@ param(
     [string]$XenosRecompThirdparty,
     [string]$SdkPrefix,
     [string]$BuildDirectory,
+    [ValidateSet('d3d12', 'vulkan', 'both')]
+    [string]$Backend = 'd3d12',
+    [string]$SpirvVal,
+    [switch]$Tests,
     [ValidateRange(1, 128)]
     [int]$Jobs = 6
 )
@@ -39,13 +43,25 @@ if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
 
 Push-Location $projectRoot
 try {
+    $backendOptions = @(
+        "-DBROKENBOND_NATIVE_D3D12=$(if ($Backend -ne 'vulkan') { 'ON' } else { 'OFF' })",
+        "-DBROKENBOND_NATIVE_VULKAN=$(if ($Backend -ne 'd3d12') { 'ON' } else { 'OFF' })",
+        "-DBROKENBOND_NATIVE_TESTS=$(if ($Tests) { 'ON' } else { 'OFF' })"
+    )
+    if ($SpirvVal) { $backendOptions += "-DBROKENBOND_SPIRV_VAL=$((Resolve-Path -LiteralPath $SpirvVal).Path)" }
     # Code generation is shared with the Xenos build (scripts/build-game.ps1).
     & cmake --preset windows-release -B $BuildDirectory "-DCMAKE_PREFIX_PATH=$SdkPrefix" `
         "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue" -DBROKENBOND_NATIVE_RENDERER=ON `
-        "-DNATIVE_RENDERER_PLUME_SOURCE=$PlumeSource" "-DBROKENBOND_XENOS_RECOMP_THIRDPARTY=$XenosRecompThirdparty"
+        "-DNATIVE_RENDERER_PLUME_SOURCE=$PlumeSource" "-DBROKENBOND_XENOS_RECOMP_THIRDPARTY=$XenosRecompThirdparty" @backendOptions
     if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
     & cmake --build $BuildDirectory --target broken_bond broken_bond_launcher --parallel $Jobs
     if ($LASTEXITCODE -ne 0) { throw 'Native renderer build failed.' }
+    if ($Tests) {
+        & cmake --build $BuildDirectory --target broken_bond_native_tests broken_bond_launcher_test --parallel $Jobs
+        if ($LASTEXITCODE -ne 0) { throw 'Native renderer test build failed.' }
+        & ctest --test-dir $BuildDirectory --output-on-failure -R '^(native_|launcher_config)'
+        if ($LASTEXITCODE -ne 0) { throw 'Native renderer tests failed.' }
+    }
 } finally {
     Pop-Location
 }

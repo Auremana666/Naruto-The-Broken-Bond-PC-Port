@@ -79,9 +79,19 @@ Builds with the native renderer (`scripts/build-game-native.ps1`, see [Build and
 | Renderer | `renderer` |
 | --- | --- |
 | Xenos, the SDK's emulated Xbox 360 GPU (default) | `"xenos"` |
-| Native, the game's Direct3D calls drawn with Direct3D 12 | `"native"` |
+| Native, the game's Direct3D calls drawn with Direct3D 12 or Vulkan | `"native"` |
 
 `scripts/run-game.ps1 -Renderer native` passes `--renderer native` for you. Builds without the native renderer ignore the key and always use Xenos. [Renderers](renderers.md) explains how the two differ.
+
+`native_backend = "d3d12"` or `"vulkan"` selects the native graphics API at the
+next launch. Direct3D 12 is the default when included; Vulkan is the default in
+a Vulkan-only native build. The renderer itself still defaults to Xenos.
+Use `scripts/run-game.ps1 -Renderer native -NativeBackend vulkan` to override the
+API for a run. The requested API must be included by
+[`build-game-native.ps1 -Backend`](build-and-run.md#native-vulkan).
+The matching launcher lists Xenos and each compiled native API, preserving
+Xenos as the default. Graphics cards are enumerated through the selected API.
+Vulkan currently uses a frame latency of one; its launcher field is read-only.
 
 ### Options of each renderer
 
@@ -104,7 +114,7 @@ These keys exist only in native renderer builds. Each takes effect on the next l
 | `brightness` | `0.5` | Output brightness from 0 to 1; `0.5` is the game's own |
 | `max_frame_latency` | `1` | Frames queued ahead of the display, 1 to 3; 1 has the lowest latency |
 | `triple_buffering` | `false` | Three swapchain buffers instead of two |
-| `graphics_device` | `""` | The graphics card, by the name Windows gives it; empty is automatic. The log names the card in use (`Native renderer adapter:`) |
+| `graphics_device` | `""` | The graphics card, by the selected API's name; empty is automatic. The native log names both the backend and card |
 | `frame_rate` | `30` | Frame rate from 30 to 240. `30` keeps the game's own; above 30 the renderer draws frames between the game's logic steps. See [Renderers](renderers.md#frame-rate) |
 
 For example, in `build/native/broken_bond.toml`:

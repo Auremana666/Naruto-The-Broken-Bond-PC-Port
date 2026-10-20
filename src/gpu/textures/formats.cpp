@@ -26,6 +26,7 @@ namespace {
 // k_5_6_5, the depth conversions and the DXT decompressions of the SDK's load
 // shaders. The depth formats are R32_FLOAT on the host.
 using TC = TexelConversion;
+using TF = TextureFormat;
 struct Row {
   uint32_t format;
   GuestFormat host;
@@ -35,28 +36,28 @@ struct Row {
 #define RGGG {0, 1, 1, 1}
 #define RRRR {0, 0, 0, 0}
 constexpr Row kRows[] = {
-    {2, {DXGI_FORMAT_R8_UNORM, 1, 1, 1, RRRR, TC::kNone, false}},                         // k_8
-    {4, {DXGI_FORMAT_B5G6R5_UNORM, 1, 2, 2, RGBB, TC::kR5G6B5ToB5G6R5, false}},           // k_5_6_5
-    {6, {DXGI_FORMAT_R8G8B8A8_UNORM, 1, 4, 4, RGBA, TC::kNone, false}},                   // k_8_8_8_8
-    {18, {DXGI_FORMAT_BC1_UNORM, 4, 8, 8, RGBA, TC::kNone, false}},                       // k_DXT1
-    {20, {DXGI_FORMAT_BC3_UNORM, 4, 16, 16, RGBA, TC::kNone, false}},                     // k_DXT4_5
-    {22, {DXGI_FORMAT_R32_FLOAT, 1, 4, 4, RRRR, TC::kDepthUnormToFloat, true}},           // k_24_8
-    {23, {DXGI_FORMAT_R32_FLOAT, 1, 4, 4, RRRR, TC::kDepthFloatToFloat, true}},           // k_24_8_FLOAT
-    {32, {DXGI_FORMAT_R16G16B16A16_FLOAT, 1, 8, 8, RGBA, TC::kNone, true}},               // k_16_16_16_16_FLOAT
-    {36, {DXGI_FORMAT_R32_FLOAT, 1, 4, 4, RRRR, TC::kNone, true}},                        // k_32_FLOAT
-    {37, {DXGI_FORMAT_R32G32_FLOAT, 1, 8, 8, RGGG, TC::kNone, true}},                     // k_32_32_FLOAT
-    {38, {DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, 16, RGBA, TC::kNone, true}},             // k_32_32_32_32_FLOAT
-    {49, {DXGI_FORMAT_BC5_UNORM, 4, 16, 16, RGGG, TC::kNone, false}},                     // k_DXN
-    {59, {DXGI_FORMAT_BC4_UNORM, 4, 8, 8, RRRR, TC::kNone, false}},                       // k_DXT5A
-    {60, {DXGI_FORMAT_R8G8_UNORM, 4, 8, 2, RGGG, TC::kCTX1ToRG8, false}},                 // k_CTX1
+    {2, {TF::kR8Unorm, 1, 1, 1, RRRR, TC::kNone, false}},                          // k_8
+    {4, {TF::kB5G6R5Unorm, 1, 2, 2, RGBB, TC::kR5G6B5ToB5G6R5, false}},            // k_5_6_5
+    {6, {TF::kR8G8B8A8Unorm, 1, 4, 4, RGBA, TC::kNone, false}},                    // k_8_8_8_8
+    {18, {TF::kBC1Unorm, 4, 8, 8, RGBA, TC::kNone, false}},                        // k_DXT1
+    {20, {TF::kBC3Unorm, 4, 16, 16, RGBA, TC::kNone, false}},                      // k_DXT4_5
+    {22, {TF::kR32Float, 1, 4, 4, RRRR, TC::kDepthUnormToFloat, true}},            // k_24_8
+    {23, {TF::kR32Float, 1, 4, 4, RRRR, TC::kDepthFloatToFloat, true}},            // k_24_8_FLOAT
+    {32, {TF::kR16G16B16A16Float, 1, 8, 8, RGBA, TC::kNone, true}},                // k_16_16_16_16_FLOAT
+    {36, {TF::kR32Float, 1, 4, 4, RRRR, TC::kNone, true}},                         // k_32_FLOAT
+    {37, {TF::kR32G32Float, 1, 8, 8, RGGG, TC::kNone, true}},                      // k_32_32_FLOAT
+    {38, {TF::kR32G32B32A32Float, 1, 16, 16, RGBA, TC::kNone, true}},              // k_32_32_32_32_FLOAT
+    {49, {TF::kBC5Unorm, 4, 16, 16, RGGG, TC::kNone, false}},                      // k_DXN
+    {60, {TF::kR8G8Unorm, 4, 8, 2, RGGG, TC::kCTX1ToRG8, false}},                  // k_CTX1
+    {59, {TF::kBC4Unorm, 4, 8, 8, RRRR, TC::kNone, false}},  // k_DXT5A
 };
 // The decompressed host formats of the block-compressed ones (the SDK's
 // dxgi_format_uncompressed and its decompressing load shader).
 constexpr Row kDecompressedRows[] = {
-    {18, {DXGI_FORMAT_R8G8B8A8_UNORM, 4, 8, 4, RGBA, TC::kDXT1ToRGBA8, false}},   // k_DXT1
-    {20, {DXGI_FORMAT_R8G8B8A8_UNORM, 4, 16, 4, RGBA, TC::kDXT5ToRGBA8, false}},  // k_DXT4_5
-    {49, {DXGI_FORMAT_R8G8_UNORM, 4, 16, 2, RGGG, TC::kDXNToRG8, false}},         // k_DXN
-    {59, {DXGI_FORMAT_R8_UNORM, 4, 8, 1, RRRR, TC::kDXT5AToR8, false}},           // k_DXT5A
+    {18, {TF::kR8G8B8A8Unorm, 4, 8, 4, RGBA, TC::kDXT1ToRGBA8, false}},   // k_DXT1
+    {20, {TF::kR8G8B8A8Unorm, 4, 16, 4, RGBA, TC::kDXT5ToRGBA8, false}},  // k_DXT4_5
+    {49, {TF::kR8G8Unorm, 4, 16, 2, RGGG, TC::kDXNToRG8, false}},         // k_DXN
+    {59, {TF::kR8Unorm, 4, 8, 1, RRRR, TC::kDXT5AToR8, false}},  // k_DXT5A
 };
 #undef RGBA
 #undef RGBB

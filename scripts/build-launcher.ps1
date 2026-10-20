@@ -23,7 +23,17 @@ if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
 
 $buildRoot = Join-Path $projectRoot $(if ($NativeRenderer) { 'build/launcher-native' } else { 'build/launcher' })
 $nativeOption = if ($NativeRenderer) { 'ON' } else { 'OFF' }
-& cmake -S (Join-Path $projectRoot 'launcher') -B $buildRoot -G Ninja '-DCMAKE_BUILD_TYPE=Release' '-DCMAKE_CXX_COMPILER=clang++' "-DCMAKE_PREFIX_PATH=$SdkPrefix" "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue" "-DBROKENBOND_LAUNCHER_NATIVE_RENDERER=$nativeOption"
+# Match the adjacent native executable's APIs when rebuilding only its launcher.
+$apiOptions = @('-DBROKENBOND_NATIVE_D3D12=ON', '-DBROKENBOND_NATIVE_VULKAN=OFF')
+$nativeCache = Join-Path $projectRoot 'build/native/CMakeCache.txt'
+if ($NativeRenderer -and (Test-Path -LiteralPath $nativeCache)) {
+    $cache = Get-Content -LiteralPath $nativeCache
+    foreach ($name in 'BROKENBOND_NATIVE_D3D12', 'BROKENBOND_NATIVE_VULKAN', 'NATIVE_RENDERER_PLUME_SOURCE') {
+        $entry = $cache | Where-Object { $_ -match "^${name}:[^=]+=" } | Select-Object -First 1
+        if ($entry) { $apiOptions += "-D${name}=$($entry.Substring($entry.IndexOf('=') + 1))" }
+    }
+}
+& cmake -S (Join-Path $projectRoot 'launcher') -B $buildRoot -G Ninja '-DCMAKE_BUILD_TYPE=Release' '-DCMAKE_CXX_COMPILER=clang++' "-DCMAKE_PREFIX_PATH=$SdkPrefix" "-Drexglue_DIR=$SdkPrefix/lib/cmake/rexglue" "-DBROKENBOND_LAUNCHER_NATIVE_RENDERER=$nativeOption" @apiOptions
 if ($LASTEXITCODE -ne 0) { throw 'Launcher configuration failed.' }
 & cmake --build $buildRoot --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { throw 'Launcher build failed.' }

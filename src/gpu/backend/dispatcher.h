@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/backend/engine.h"
+#include "gpu/backend/failure_channel.h"
 #include <functional>
 #include <memory>
 
@@ -34,6 +35,7 @@ class Dispatcher final {
   ~Dispatcher();
   bool Initialize(std::string& evidence, const RenderMode& mode = RenderMode{});  // The engine's render mode.
   std::string DeviceName() const;  // The engine's adapter, after Initialize.
+  GraphicsApi Api() const;  // The engine's API, after Initialize.
   bool InitializeFrontend(uint64_t session_generation, std::string& evidence);
   bool VerifyFrontend(uint64_t session_generation, std::string& evidence);
   bool ReleaseFrontend(uint64_t session_generation, std::string& evidence);
@@ -42,9 +44,10 @@ class Dispatcher final {
   bool Run(std::function<bool(Engine&, std::string&)> operation, std::string& evidence);
   // Queues one engine operation on the owner thread without
   // waiting; the operation owns what it captures. FIFO with Run. The first
-  // posted operation that fails is kept with its evidence and every later
-  // posted operation is dropped unexecuted. Admission waits while kPostedMax
-  // posted operations are pending, and is refused after a failure.
+  // posted operation that fails is retained in the failure channel with its
+  // evidence and every later posted operation is dropped unexecuted.
+  // Admission waits while kPostedMax posted operations are pending, and is
+  // refused once the channel holds a failure.
   static constexpr size_t kPostedMax = 512;
   bool Post(std::function<bool(Engine&, std::string&)> operation);
   // Draws recorded in a batch and posted in groups. PostDraw
@@ -57,8 +60,14 @@ class Dispatcher final {
   bool PostDraw(DrawRequest&& request);
   // Batches posted, draws they carried and why they closed (JSON fields).
   std::string DrawBatchSummary();
-  // The kept failure of a posted operation, if any. Any thread; an atomic
-  // flag answers before the lock when nothing failed.
+  // The session's failure channel (failure_channel.h), created with the
+  // dispatcher and shared with its engine: the failure of a posted operation
+  // and the ones the backend's services find. A retained failure refuses
+  // every later admission and wakes the producers waiting for room. Nothing
+  // may call Retain while holding a lock of the dispatcher.
+  FailureChannel& Failures() const;
+  // The failure the channel holds, if any, with the posted counters. Any
+  // thread; the channel's flag answers without a lock when nothing failed.
   bool PostedFailure(std::string& evidence);
   // WaitIdle on the owner, refused when a posted operation failed before it:
   // the guard of every point that publishes a fence to the title.
@@ -73,7 +82,7 @@ class Dispatcher final {
   // it ran already or the dispatcher is not running.
   static constexpr unsigned kPoolThreadsInGame = 2;
   bool StartPool(size_t count, unsigned threads, std::function<void(size_t, Engine&)> work,
-                 std::function<void(bool)> done);
+                   std::function<void(bool)> done);
   // Runs operation(engine) on the calling thread, for the engine's
   // free-threaded operations only (PostPipeline, PrecompilePipeline); the
   // engine stays until it returns. False, without waiting, when the dispatcher

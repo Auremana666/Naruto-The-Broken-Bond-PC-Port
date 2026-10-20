@@ -58,14 +58,16 @@ bool InitializeEngines(PPCContext& ctx) {
           true, gpu::DeferredTranslation());  // The translation stage, by the session.
       const auto& settings = gpu::CurrentSettings();
       ready = candidate->Initialize(evidence, gpu::RenderMode{settings.resolution_scale, settings.msaa_samples,
-                                                              settings.graphics_device});
+          settings.graphics_device, settings.native_backend == "vulkan" ? GraphicsApi::kVulkan :
+          settings.native_backend == "d3d12" ? GraphicsApi::kD3D12 : GraphicsApi(0xFF)});
       if (ready) {
         // The adapter in use, as the SDK logs it for the Xenos renderer.
         const std::string device = candidate->DeviceName();
         if (!settings.graphics_device.empty() && device != settings.graphics_device)
           REXLOG_WARN("[broken_bond] graphics_device \"{}\" not found; the automatic choice is used",
                       settings.graphics_device);
-        REXLOG_INFO("[broken_bond] Native renderer adapter: {}", device);
+        REXLOG_INFO("[broken_bond] Native renderer backend: {}; adapter: {}; initialization: {}",
+                    settings.native_backend, device, evidence);
         engine_registration = {ctx.r4.u32, ctx.r5.u32, ts->thread_id(), int(thread->active_cpu()), ctx.r31.u32};
         native_engine = std::move(candidate);
       } else {

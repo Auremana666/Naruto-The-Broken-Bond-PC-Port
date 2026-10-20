@@ -16,13 +16,12 @@
 // without itself, and the threads run at the lowest priority.
 #pragma once
 
-#include <d3d12.h>
-#include <wrl/client.h>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -30,20 +29,19 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "gpu/backend/engine.h"
+#include "gpu/backend/pipeline_keys.h"
+#include "gpu/backend/contracts.h"
 
 namespace gpu {
 
-// The triple of a pipeline (VS, PS, layout): the part of its key the driver
-// compiles shaders for.
-uint64_t TripleKey(const std::string& vs_key, const std::string& ps_key, uint64_t layout_id);
-
 class PipelineSet {
  public:
-  using Pipeline = Microsoft::WRL::ComPtr<ID3D12PipelineState>;
-  // Creates the pipeline of a description, on any thread (the engine binds
-  // its device and draw root signature).
-  using Creator = std::function<HRESULT(const PipelineDesc& desc, Pipeline& out, const char*& reason)>;
+  // A pipeline object of the backend, opaque here: the backend's creator makes
+  // it, with the deleter of its API, and only the backend reads it.
+  using Pipeline = std::shared_ptr<void>;
+  // Creates the pipeline of a description, on any thread (the backend binds
+  // its device and draw layout).
+  using Creator = std::function<NativeResult(const PipelineDesc& desc, Pipeline& out)>;
 
   PipelineSet();
   ~PipelineSet();
@@ -55,8 +53,8 @@ class PipelineSet {
 
   // One entry of the list, on a pool thread: creates key's pipeline into the
   // set unless the set has the key already (present: compiling, ready or the
-  // owner's). The creation's HRESULT (S_OK when present).
-  HRESULT Precompile(uint64_t key, const PipelineDesc& desc, bool& present, const char*& reason);
+  // owner's). The creation's result (success when present).
+  NativeResult Precompile(uint64_t key, const PipelineDesc& desc, bool& present);
 
   // Posts key's creation to the asynchronous threads, started at the first
   // post (owner). only_if_absent: nothing when the set has the key (false).
@@ -117,7 +115,7 @@ class PipelineSet {
   static constexpr uint64_t kWarmBudgetUs = 3000, kWarmSlowUs = 8000;
   Taken TakeSync(uint64_t key, uint64_t triple, bool prefetch);
   Taken TakeSkip(uint64_t key, uint64_t triple);
-  void Finish(uint64_t key, uint64_t triple, HRESULT hr, Pipeline pipeline);
+  void Finish(uint64_t key, uint64_t triple, bool created, Pipeline pipeline);
   void StartThreads(bool lowest);  // Under mutex_.
   void Work(int base_priority);
 

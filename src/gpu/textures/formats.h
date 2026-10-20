@@ -9,7 +9,7 @@
 // SDK's own load shaders (textures/tests/formats_test.cpp).
 #include <cstdint>
 #include <vector>
-#include <dxgiformat.h>
+#include "gpu/backend/contracts.h"
 
 namespace gpu {
 // Xenos 2D tiling: 32x32-block macro tiles (crn_decomp.h offsets, as the SDK
@@ -37,7 +37,7 @@ bool DecompressesBlocks(TexelConversion conversion);
 
 // The host side of a guest format (one row of the SDK's host_formats_).
 struct GuestFormat {
-  DXGI_FORMAT host;
+  TextureFormat host;
   uint8_t block;                 // Block width and height in texels (4 for the compressed formats).
   uint8_t bytes_per_block;       // Guest bytes per block.
   uint8_t host_bytes_per_block;  // Host bytes per block after the conversion.

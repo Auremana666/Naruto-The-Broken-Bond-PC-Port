@@ -1,5 +1,6 @@
 // Vertex input of the D3D boundary (vertex_layout.h).
 #include "gpu/buffers/vertex_layout.h"
+#include "gpu/backend/pipeline_keys.h"
 #include "gpu/d3d/hooks.h"
 #include "gpu/d3d/draw.h"
 #include "gpu/common/guest_memory.h"
@@ -10,7 +11,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <dxgiformat.h>
 #include <array>
 #include <chrono>
 #include <atomic>
@@ -45,23 +45,25 @@ namespace gpu {
 const char* kSemantics[] = {"POSITION", "BLENDWEIGHT", "BLENDINDICES", "NORMAL", "PSIZE", "TEXCOORD", "TANGENT",
                             "BINORMAL", "TESSFACTOR", "POSITIONT", "COLOR", "FOG", "DEPTH", "SAMPLE"};
 
-// Xenos vertex format (vfetch dword 1) to DXGI; 0 when not covered yet.
-uint32_t VertexFormat(uint32_t format, bool integer, bool is_signed) {
+// Xenos vertex format (vfetch dword 1) to the typed vertex format; unknown
+// when not covered yet.
+VertexFormat TypedVertexFormat(uint32_t format, bool integer, bool is_signed) {
+  using F = VertexFormat;
   switch (format) {
-    case 6: return integer ? (is_signed ? DXGI_FORMAT_R8G8B8A8_SINT : DXGI_FORMAT_R8G8B8A8_UINT)
-                           : (is_signed ? DXGI_FORMAT_R8G8B8A8_SNORM : DXGI_FORMAT_R8G8B8A8_UNORM);
+    case 6: return integer ? (is_signed ? F::kR8G8B8A8Sint : F::kR8G8B8A8Uint)
+                           : (is_signed ? F::kR8G8B8A8Snorm : F::kR8G8B8A8Unorm);
     // 16-bit pairs: only TEXCOORD, whose order XenosRecomp restores by g_SwappedTexcoords.
-    case 25: return integer ? (is_signed ? DXGI_FORMAT_R16G16_SINT : DXGI_FORMAT_R16G16_UINT)
-                            : (is_signed ? DXGI_FORMAT_R16G16_SNORM : DXGI_FORMAT_R16G16_UNORM);
-    case 26: return integer ? (is_signed ? DXGI_FORMAT_R16G16B16A16_SINT : DXGI_FORMAT_R16G16B16A16_UINT)
-                            : (is_signed ? DXGI_FORMAT_R16G16B16A16_SNORM : DXGI_FORMAT_R16G16B16A16_UNORM);
-    case 31: return DXGI_FORMAT_R16G16_FLOAT;
-    case 32: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    case 36: return DXGI_FORMAT_R32_FLOAT;
-    case 37: return DXGI_FORMAT_R32G32_FLOAT;
-    case 38: return DXGI_FORMAT_R32G32B32A32_FLOAT;
-    case 57: return DXGI_FORMAT_R32G32B32_FLOAT;
-    default: return 0;
+    case 25: return integer ? (is_signed ? F::kR16G16Sint : F::kR16G16Uint)
+                            : (is_signed ? F::kR16G16Snorm : F::kR16G16Unorm);
+    case 26: return integer ? (is_signed ? F::kR16G16B16A16Sint : F::kR16G16B16A16Uint)
+                            : (is_signed ? F::kR16G16B16A16Snorm : F::kR16G16B16A16Unorm);
+    case 31: return F::kR16G16Float;
+    case 32: return F::kR16G16B16A16Float;
+    case 36: return F::kR32Float;
+    case 37: return F::kR32G32Float;
+    case 38: return F::kR32G32B32A32Float;
+    case 57: return F::kR32G32B32Float;
+    default: return F::kUnknown;
   }
 }
 
@@ -72,14 +74,14 @@ uint32_t VertexFormat(uint32_t format, bool integer, bool is_signed) {
 // the same size, and 10_11_11 (format 16) is expanded on the CPU by the same
 // arithmetic into a separate stream of four float bit patterns.
 bool UintUsage(uint32_t usage) { return usage == 3 || usage == 6 || usage == 7; }
-uint32_t UintVertexFormat(uint32_t format) {
+VertexFormat UintVertexFormat(uint32_t format) {
   switch (format) {
-    case 16: case 31: case 32: return DXGI_FORMAT_R32G32B32A32_UINT;  // Expanded stream.
-    case 36: return DXGI_FORMAT_R32_UINT;
-    case 37: return DXGI_FORMAT_R32G32_UINT;
-    case 38: return DXGI_FORMAT_R32G32B32A32_UINT;
-    case 57: return DXGI_FORMAT_R32G32B32_UINT;
-    default: return 0;
+    case 16: case 31: case 32: return VertexFormat::kR32G32B32A32Uint;  // Expanded stream.
+    case 36: return VertexFormat::kR32Uint;
+    case 37: return VertexFormat::kR32G32Uint;
+    case 38: return VertexFormat::kR32G32B32A32Uint;
+    case 57: return VertexFormat::kR32G32B32Uint;
+    default: return VertexFormat::kUnknown;
   }
 }
 // The vertex fetch is decoded in the shader. The shaders of the cache come
@@ -111,9 +113,9 @@ uint32_t FetchBytes(uint32_t format) {
     default: return 0;
   }
 }
-uint32_t RawVertexFormat(uint32_t bytes) {
-  return bytes == 4 ? DXGI_FORMAT_R32_UINT : bytes == 8 ? DXGI_FORMAT_R32G32_UINT
-         : bytes == 12 ? DXGI_FORMAT_R32G32B32_UINT : DXGI_FORMAT_R32G32B32A32_UINT;
+VertexFormat RawVertexFormat(uint32_t bytes) {
+  return bytes == 4 ? VertexFormat::kR32Uint : bytes == 8 ? VertexFormat::kR32G32Uint
+         : bytes == 12 ? VertexFormat::kR32G32B32Uint : VertexFormat::kR32G32B32A32Uint;
 }
 constexpr uint32_t Selectors(uint32_t x, uint32_t y, uint32_t z, uint32_t w) { return x | y << 3 | z << 6 | w << 9; }
 // The components of n, then the defaults of the input assembler: y and z 0,
@@ -438,10 +440,12 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     const bool dec3 = xenos_format == 7 && plain;
     const bool swizzled_pairs = !UintUsage(usage) && usage != 5 && (xenos_format == 25 || xenos_format == 26) && plain &&
                                 swizzle_covered;
-    const uint32_t legacy = UintUsage(usage) ? (dec3 ? uint32_t(DXGI_FORMAT_R32G32B32A32_UINT) : UintVertexFormat(xenos_format))
-                            : float_packed || swizzled_pairs || dec3 ? uint32_t(DXGI_FORMAT_R32G32B32A32_FLOAT)
-                            : half_pairs && usage != 5 ? 0u
-                            : VertexFormat(xenos_format, integer, is_signed);
+    const VertexFormat legacy =
+        UintUsage(usage) ? (dec3 ? VertexFormat::kR32G32B32A32Uint : UintVertexFormat(xenos_format))
+        : float_packed || swizzled_pairs || dec3 ? VertexFormat::kR32G32B32A32Float
+        : half_pairs && usage != 5 ? VertexFormat::kUnknown
+        : TypedVertexFormat(xenos_format, integer, is_signed);
+    const bool legacy_covered = legacy != VertexFormat::kUnknown;
     const bool legacy_expanded = (xenos_format == 16 && (float_packed || UintUsage(usage))) ||
                                  (UintUsage(usage) && half_pairs) || swizzled_pairs || dec3;
     // The decode of the element.
@@ -468,7 +472,7 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
         vf.by_endian = true;
         selectors = xenos_format == 32 ? Selectors(0, 1, 2, 3) : Selectors(0, 1, 4, 5);
         vf.descriptor_8in32 = xenos_format == 32 ? Selectors(1, 0, 3, 2) : Selectors(1, 0, 4, 5);
-      } else if (UintVertexFormat(xenos_format)) {  // The float bits.
+      } else if (UintVertexFormat(xenos_format) != VertexFormat::kUnknown) {  // The float bits.
         selectors = DefaultSelectors(vf.components, 4);
       } else {
         covered = false;
@@ -482,12 +486,12 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
       vf.texcoord_index = int32_t(usage_index);
       selectors = DefaultSelectors(vf.components, 5);
       vf.descriptor_8in32 = xenos_format == 26 || xenos_format == 32 ? Selectors(1, 0, 3, 2) : Selectors(1, 0, 5, 4);
-      covered = covered && legacy;
+      covered = covered && legacy_covered;
     } else if (swizzled_pairs || (halves && swizzle_covered)) {
       // The patched swizzle (POSITION 16_16, BLENDWEIGHT, 16_16_FLOAT and
       // 16_16_16_16_FLOAT in COLOR of the Story Mode scene).
       vf.resolve_swizzle = true;
-    } else if (!half_pairs && legacy) {
+    } else if (!half_pairs && legacy_covered) {
       // The patched swizzle too (the D3DCOLOR elements of the Story Mode
       // buildings, 8_8_8_8 with Z, Y, X, W).
       selectors = DefaultSelectors(vf.components, 5);
@@ -499,12 +503,13 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     vf.descriptor_8in32 = vf.by_endian ? FetchDescriptor(xenos_format, is_signed, integer, dec3n, vf.descriptor_8in32)
                                        : vf.descriptor;
     const uint32_t offset = (w2 >> 8) & 0x7FFFFF, bytes = source ? 4 : FetchBytes(xenos_format);
-    const uint32_t format = covered ? RawVertexFormat(bytes) : 0;
+    const VertexFormat format = covered ? RawVertexFormat(bytes) : VertexFormat::kUnknown;
     L.elements_record += fmt::format("{}{{\"usage\":{},\"index\":{},\"address\":{},\"fetch\":{},\"xenos_format\":{},"
         "\"dxgi\":{},\"legacy_dxgi\":{},\"descriptor\":{},\"stride_words\":{},\"offset_words\":{},\"mini\":{},"
         "\"fetch_address\":{},\"words\":[{},{},{}]}}", L.elements_record.empty() ? "" : ",", usage, usage_index, address,
-        fetch, xenos_format, format, legacy, vf.descriptor, stride, offset, mini, match->address, w0, w1, w2);
-    if ((w0 & 0x1F) != 0 || fetch >= 96 || !stride || !format)
+        fetch, xenos_format, uint32_t(format), uint32_t(legacy), vf.descriptor, stride, offset, mini, match->address,
+        w0, w1, w2);
+    if ((w0 & 0x1F) != 0 || fetch >= 96 || !stride || format == VertexFormat::kUnknown)
       return fail("vertex-fetch-uncovered", fmt::format("\"elements\":[{}]", L.elements_record));
     if (4 * offset + bytes > 4 * stride)
       return fail("vertex-element-beyond-stride", fmt::format("\"elements\":[{}]", L.elements_record));
@@ -531,7 +536,7 @@ void ParseVertexElements(PPCContext& saved, uint8_t* base, uint32_t dev, const B
     vf.slot = slot;
     L.elements.push_back({kSemantics[usage], usage_index, format, slot, offset * 4});
     L.legacy_elements.push_back({kSemantics[usage], usage_index, legacy, slot, offset * 4});
-    L.legacy_ok = L.legacy_ok && legacy && !legacy_expanded;
+    L.legacy_ok = L.legacy_ok && legacy_covered && !legacy_expanded;
     L.fetch.push_back(vf);
   }
   if (L.indirect_fetch >= 0) ClassifyIndirectStreams(base, vs, element_role, source_element, L);
@@ -610,24 +615,10 @@ std::shared_ptr<const VertexLayout> FindOrBuildVertexLayout(PPCContext& saved, u
   ParseVertexElements(saved, base, dev, vs, vs_cached, *layout);
   if (layout->ok && vs_cached) ResolveTemplateSwizzles(*layout, *vs_cached);
   // The request shares the elements and carries their id.
-  auto elements_id = [](const std::vector<VertexElement>& elements) {
-    uint64_t id = 0xCBF29CE484222325ull;
-    auto mix = [&](const void* data, size_t size) {
-      const auto* p = static_cast<const uint8_t*>(data);
-      for (size_t i = 0; i < size; ++i) id = (id ^ p[i]) * 0x100000001B3ull;
-    };
-    for (const auto& e : elements) {
-      mix(e.semantic, std::strlen(e.semantic));
-      const uint32_t fields[4] = {e.semantic_index, e.format, e.slot, e.offset};
-      mix(fields, sizeof(fields));
-      if (e.instance_step) mix(&e.instance_step, sizeof(e.instance_step));  // As the engine's ElementsId.
-    }
-    return id;
-  };
   layout->shared_elements = std::make_shared<const std::vector<VertexElement>>(layout->elements);
   layout->shared_legacy_elements = std::make_shared<const std::vector<VertexElement>>(layout->legacy_elements);
-  layout->elements_id = elements_id(layout->elements);
-  layout->legacy_elements_id = elements_id(layout->legacy_elements);
+  layout->elements_id = ElementsId(layout->elements);
+  layout->legacy_elements_id = ElementsId(layout->legacy_elements);
   if (cacheable && vs_cached) {
     std::lock_guard lock(vertex_layouts_mutex);
     vertex_layouts[key] = layout;

@@ -99,7 +99,8 @@ std::unique_ptr<DeviceOwner> device_owner;
 bool FenceWaitFailed() {
   std::string evidence;
   auto* dispatcher = host::ActiveDispatcher();
-  return !dispatcher || dispatcher->PostedFailure(evidence) || host::InterruptsClosing();
+  return !dispatcher || dispatcher->PostedFailure(evidence) || host::InterruptsClosing() ||
+         stop_requested.load(std::memory_order_acquire);
 }
 // A stop caused by a failed posted operation records its sequence,
 // how many operations were posted after it and the guest point of the stop.
@@ -226,5 +227,7 @@ bool RequestStop(std::string_view reason, int code) {
   host::Record("native-d3d-stop-request", fmt::format("\"reason\":\"{}\",\"code\":{}", reason, code));
   return true;
 }
-bool PublishFrameFence(uint32_t fence) { return device_owner && device_owner->PublishFrame(fence); }
+FramePublication PublishFrameFence(uint32_t fence, FailureChannel& failures) {
+  return device_owner ? device_owner->PublishFrame(fence, failures) : FramePublication::kFailed;
+}
 }  // namespace gpu

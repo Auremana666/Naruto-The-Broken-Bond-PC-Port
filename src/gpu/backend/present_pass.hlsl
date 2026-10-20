@@ -6,15 +6,32 @@
 // filter, as the SDK's presenter applies it to the front buffer before scaling.
 // Compiled offline into backend/present_pass.h (dxc -T vs_6_0 or ps_6_0 -E <entry>):
 // vs_main as kPresentVs, ps_main as kPresentPs, ps_gamma as kPresentGammaPs and
-// ps_gamma_luma as kPresentGammaLumaPs.
-Texture2D<float4> source : register(t0);
-cbuffer Ramp : register(b0) { uint4 ramp[256]; };  // xyz: 10-bit r, g, b
+// ps_gamma_luma as kPresentGammaLumaPs. The SPIR-V of the Vulkan backend comes
+// from the build (tools/native-renderer/build-pass-spirv.py): the texture and
+// the ramp in set 0, the pass constants (root constants in D3D12) as push
+// constants.
+[[vk::binding(0, 0)]] Texture2D<float4> source : register(t0);
+[[vk::binding(1, 0)]] cbuffer Ramp : register(b0) { uint4 ramp[256]; };  // xyz: 10-bit r, g, b
+#ifdef __spirv__
+struct PassConstants {
+  float2 origin;
+  float2 scale;
+  uint2 size;
+  float2 extent;
+};
+[[vk::push_constant]] PassConstants pass_constants;
+#define origin pass_constants.origin
+#define scale pass_constants.scale
+#define size pass_constants.size
+#define extent pass_constants.extent
+#else
 cbuffer Pass : register(b1) {
   float2 origin;  // Image rect origin in the back buffer, in pixels.
   float2 scale;   // Source texels per back-buffer pixel.
   uint2 size;     // Source size.
   float2 extent;  // Image rect size, in pixels.
 };
+#endif
 
 float4 vs_main(uint id : SV_VertexID) : SV_Position {
   const float2 uv = float2((id << 1) & 2, id & 2);

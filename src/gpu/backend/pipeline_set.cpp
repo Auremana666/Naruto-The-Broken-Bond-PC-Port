@@ -7,7 +7,6 @@
 #include <cstdlib>
 #include <string_view>
 #include <fmt/format.h>
-#include "gpu/common/hash.h"
 #include "gpu/common/title_loading.h"
 #include "gpu/diagnostics/profile.h"
 
@@ -31,45 +30,37 @@ uint64_t ElapsedUs(std::chrono::steady_clock::time_point since) {
 }
 }  // namespace
 
-uint64_t TripleKey(const std::string& vs_key, const std::string& ps_key, uint64_t layout_id) {
-  uint64_t key = 0xCBF29CE484222325ull;
-  key = Fnv64(reinterpret_cast<const uint8_t*>(vs_key.data()), vs_key.size(), key);
-  key = Fnv64(reinterpret_cast<const uint8_t*>("|"), 1, key);
-  key = Fnv64(reinterpret_cast<const uint8_t*>(ps_key.data()), ps_key.size(), key);
-  return Fnv64(reinterpret_cast<const uint8_t*>(&layout_id), sizeof(layout_id), key);
-}
-
 PipelineSet::PipelineSet() : warm_sync_(warmSyncOption()) {}
 
 PipelineSet::~PipelineSet() { Stop(); }
 
 void PipelineSet::Configure(Creator creator) { creator_ = std::move(creator); }
 
-HRESULT PipelineSet::Precompile(uint64_t key, const PipelineDesc& desc, bool& present, const char*& reason) {
+NativeResult PipelineSet::Precompile(uint64_t key, const PipelineDesc& desc, bool& present) {
   present = false;
   {
     std::lock_guard lock(mutex_);
     if (!entries_.try_emplace(key).second) {
       present = true;
-      return S_OK;
+      return {};
     }
   }
   Pipeline pipeline;
-  const HRESULT hr = creator_(desc, pipeline, reason);
-  Finish(key, TripleKey(desc.vs_key, desc.ps_key, desc.layout_id), hr, std::move(pipeline));
-  if (SUCCEEDED(hr)) precompiled_.fetch_add(1, std::memory_order_relaxed);
-  return hr;
+  const NativeResult result = creator_(desc, pipeline);
+  Finish(key, TripleKey(desc.vs.key, desc.ps.key, desc.layout_id), result.ok, std::move(pipeline));
+  if (result.ok) precompiled_.fetch_add(1, std::memory_order_relaxed);
+  return result;
 }
 
 // A creation ended (a pool or an asynchronous thread): the entry is ready
 // or failed, the triple warm, and a waiting take wakes up.
-void PipelineSet::Finish(uint64_t key, uint64_t triple, HRESULT hr, Pipeline pipeline) {
+void PipelineSet::Finish(uint64_t key, uint64_t triple, bool created, Pipeline pipeline) {
   {
     std::lock_guard lock(mutex_);
     Entry& entry = entries_[key];
-    entry.phase = SUCCEEDED(hr) ? Phase::Ready : Phase::Failed;
+    entry.phase = created ? Phase::Ready : Phase::Failed;
     entry.pipeline = std::move(pipeline);
-    if (SUCCEEDED(hr)) warm_triples_.insert(triple);
+    if (created) warm_triples_.insert(triple);
   }
   done_.notify_all();
 }
@@ -123,10 +114,9 @@ void PipelineSet::Work(int base_priority) {
     }
     const PipelineDesc& d = job.second;
     Pipeline created;
-    const char* reason = nullptr;
-    const HRESULT hr = creator_(d, created, reason);
-    Finish(job.first, TripleKey(d.vs_key, d.ps_key, d.layout_id), hr, std::move(created));
-    if (SUCCEEDED(hr)) async_created_.fetch_add(1, std::memory_order_relaxed);
+    const NativeResult result = creator_(d, created);
+    Finish(job.first, TripleKey(d.vs.key, d.ps.key, d.layout_id), result.ok, std::move(created));
+    if (result.ok) async_created_.fetch_add(1, std::memory_order_relaxed);
   }
 }
 

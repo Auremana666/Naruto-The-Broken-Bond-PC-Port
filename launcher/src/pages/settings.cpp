@@ -93,17 +93,27 @@ void RenderGameGroup(OptionList& list, GameConfig& config) {
 }
 
 void RenderDisplayGroup(OptionList& list, GameConfig& config) {
-  const bool native = kNativeRendererBuilt && config.renderer == "native";
+  bool native = kNativeRendererBuilt && config.renderer == "native";
   if (kNativeRendererBuilt) {
-    const char* renderers[] = {Tr(TextId::RendererXenos), Tr(TextId::RendererNative)};
-    int renderer = native ? 1 : 0;
-    if (list.Combo(kRenderer, renderer, renderers)) config.renderer = renderer == 1 ? "native" : "xenos";
+    std::vector<const char*> renderers{Tr(TextId::RendererXenos)};
+    std::vector<std::string> backends{""};
+    if (kNativeD3d12Built) { renderers.push_back("Native: Direct3D 12"); backends.emplace_back("d3d12"); }
+    if (kNativeVulkanBuilt) { renderers.push_back("Native: Vulkan"); backends.emplace_back("vulkan"); }
+    int renderer = native ? -1 : 0;
+    for (size_t i = 1; i < backends.size(); ++i)
+      if (native && config.native_backend == backends[i]) renderer = int(i);
+    if (list.Combo(kRenderer, renderer, renderers) && renderer >= 0) {
+      native = renderer != 0;
+      config.renderer = native ? "native" : "xenos";
+      if (native) config.native_backend = backends[renderer];
+      config.graphics_device.clear();
+    }
   }
 
   // Automatic, the cards present, and a saved card that is no longer present.
   std::vector<const char*> devices = {Tr(TextId::GraphicsDeviceAuto)};
   int device = 0;
-  for (const auto& name : GraphicsDevices()) {
+  for (const auto& name : GraphicsDevices(native && config.native_backend == "vulkan")) {
     if (name == config.graphics_device) device = static_cast<int>(devices.size());
     devices.push_back(name.c_str());
   }
@@ -215,7 +225,9 @@ void RenderControlsGroup(OptionList& list, GameConfig& config) {
 void RenderAdvancedGroup(OptionList& list, GameConfig& config) {
   const char* latencies[] = {Tr(TextId::FrameLatencyLowest), "2", "3"};
   int latency = std::clamp(config.max_frame_latency, 1, 3) - 1;
-  if (list.Combo(kFrameLatency, latency, latencies)) config.max_frame_latency = latency + 1;
+  if (kNativeRendererBuilt && config.renderer == "native" && config.native_backend == "vulkan")
+    list.Text(kFrameLatency, latencies[0]);
+  else if (list.Combo(kFrameLatency, latency, latencies)) config.max_frame_latency = latency + 1;
   list.Checkbox(kTripleBuffering, config.triple_buffering);
   list.Checkbox(kFpsOverlay, config.show_fps_overlay);
 }

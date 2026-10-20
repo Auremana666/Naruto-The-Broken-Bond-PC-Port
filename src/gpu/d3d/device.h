@@ -3,6 +3,7 @@
 // The guest device owner of the D3D boundary (DeviceOwner below).
 #include "gpu/d3d/d3d.h"
 #include "gpu/backend/dispatcher.h"
+#include "gpu/backend/failure_channel.h"
 #include "gpu/d3d/init/initializer_transaction.h"
 #include "gpu/d3d/init/initializer_abi.h"
 #include "gpu/d3d/init/video_transaction.h"
@@ -424,7 +425,8 @@ class DeviceOwner final {
   // failure, stop); a wait without publication for kGateTimeout fails too.
   enum class FenceResult { Done, Skipped, Waited, Failed };
   template <typename Drain, typename Failed>
-  FenceResult BlockOnFence(uint32_t fence, Drain&& drain, Failed&& failed, std::string& fields) {
+  FenceResult BlockOnFence(uint32_t fence, Drain&& drain, Failed&& failed, std::string& fields,
+                           std::chrono::milliseconds preparation_budget = kGateTimeout) {
     std::unique_lock lock(fence_mutex_);
     uint32_t counter = 0, completed = 0, suspended = 0;
     if (!live_.load(std::memory_order_acquire) || !writeback_ || !Word(10908, counter) ||
@@ -456,7 +458,9 @@ class DeviceOwner final {
       path = "frame-end";
       ++frame_end_waits_;
     }
-    auto deadline = std::chrono::steady_clock::now() + kGateTimeout;
+    // This includes FIFO translation and CPU pipeline compilation before
+    // submission. The backend separately bounds actual GPU completion.
+    auto deadline = std::chrono::steady_clock::now() + preparation_budget;
     for (;;) {
       if (!Word(10908, counter) || !GuestWord(writeback_, completed)) return FenceResult::Failed;
       if (drained) {
@@ -472,7 +476,7 @@ class DeviceOwner final {
       if (released_ || failed()) return FenceResult::Failed;
       const uint64_t published = frame_publications_;
       fence_cv_.wait_for(lock, std::chrono::milliseconds(5));
-      if (frame_publications_ != published) deadline = std::chrono::steady_clock::now() + kGateTimeout;
+      if (frame_publications_ != published) deadline = std::chrono::steady_clock::now() + preparation_budget;
       else if (std::chrono::steady_clock::now() > deadline) return FenceResult::Failed;
     }
     record("waited");
@@ -497,17 +501,25 @@ class DeviceOwner final {
     return true;
   }
   // The lot of this frame fence completed on the own queue: the frame fence
-  // becomes the completed value. Frame ends are published in order.
-  bool PublishFrame(uint32_t fence) {
+  // becomes the completed value. Frame ends are published in order. The store
+  // is authorized by the session's failure channel inside the fence lock (the
+  // lock order fence lock, then channel: the Swap holds the fence lock while it
+  // posts the lot close, which can wait for the owner).
+  FramePublication PublishFrame(uint32_t fence, FailureChannel& failures) {
     std::lock_guard lock(fence_mutex_);
     uint32_t counter = 0, completed = 0;
     if (!live_.load(std::memory_order_acquire) || !writeback_ || gates_.empty() || gates_.front() != fence ||
-        !Word(10908, counter) || !GuestWord(writeback_, completed)) return false;
-    gates_.pop_front();
-    if (!GuestStore(writeback_, Later(counter, fence, completed))) return false;
+        !Word(10908, counter) || !GuestWord(writeback_, completed)) return FramePublication::kFailed;
+    bool stored = false;
+    if (!failures.Authorize([&] {
+          gates_.pop_front();
+          stored = GuestStore(writeback_, Later(counter, fence, completed));
+        }))
+      return FramePublication::kRefused;
+    if (!stored) return FramePublication::kFailed;
     ++frame_publications_;
     fence_cv_.notify_all();
-    return true;
+    return FramePublication::kPublished;
   }
   std::string FenceSummary() {
     std::lock_guard lock(fence_mutex_);

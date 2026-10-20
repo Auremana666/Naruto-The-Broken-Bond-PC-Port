@@ -12,6 +12,7 @@
 // earlier altitude (host/host.cpp) call these first and
 // return when Active().
 namespace gpu {
+class FailureChannel;
 bool Active();
 void DeviceArena(PPCContext& ctx, uint8_t* base);        // 8219FEB8 inside 821B4060
 void DeviceWorkers(PPCContext& ctx, uint8_t* base);      // 821B8D78
@@ -37,8 +38,11 @@ bool AdmitSwapDiscardKick(PPCContext& ctx, uint8_t* base);
 // own Swap or draw. False when the native mode has no live device.
 bool RequestStop(std::string_view reason, int code);
 // The own interrupt source flipped the frame of this fence; publishes
-// it as the completed fence (DeviceOwner::PublishFrame).
-bool PublishFrameFence(uint32_t fence);
+// it as the completed fence (DeviceOwner::PublishFrame), authorized by the
+// session's failure channel inside the device's fence lock: refused once the
+// channel holds a failure (FailureChannel::Authorize).
+enum class FramePublication { kPublished, kRefused, kFailed };
+FramePublication PublishFrameFence(uint32_t fence, FailureChannel& failures);
 // Posts the Present of a frame at its flip, before its fence is
 // published. False when it could not be posted.
 bool PresentFrame(const std::shared_ptr<host::FramePresent>& present);

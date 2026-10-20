@@ -5,7 +5,9 @@ param(
     [switch]$Keyboard,
     # native: the build of scripts/build-game-native.ps1, with a JSONL journal next to the log.
     [ValidateSet('xenos', 'native')]
-    [string]$Renderer = 'xenos'
+    [string]$Renderer = 'xenos',
+    [ValidateSet('d3d12', 'vulkan')]
+    [string]$NativeBackend
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +35,7 @@ $launchArguments = @(
 if ($Keyboard) { $launchArguments += '--mnk_mode' }
 $previousFrameDirectory = $env:REX_NATIVE_FRAME_DIR
 if ($Renderer -eq 'native') {
+    if ($NativeBackend) { $launchArguments += @('--native_backend', $NativeBackend) }
     $journal = [IO.Path]::ChangeExtension($logFile, '.native.jsonl')
     Write-Host "Native renderer journal: $journal"
     $launchArguments += @('--renderer', 'native', '--native_renderer_bootstrap_path', ('"{0}"' -f $journal))

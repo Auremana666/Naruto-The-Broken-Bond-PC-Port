@@ -5,6 +5,7 @@
 // later operation must be refused, and Shutdown must discard the batch that
 // was never submitted. Usage: native_engine_latch_test <new output.jsonl>
 #include "gpu/backend/engine.h"
+#include "gpu/backend/tests/test_backend.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -28,7 +29,7 @@ int main(int argc, char** argv) {
   };
   Engine engine;
   std::string evidence;
-  const bool ready = engine.Initialize(evidence);
+  const bool ready = engine.Initialize(evidence, TestRenderMode());
   line("initialize", ready, evidence);
   if (!ready) { engine.Shutdown(evidence); return 4; }
   SurfaceDesc desc;

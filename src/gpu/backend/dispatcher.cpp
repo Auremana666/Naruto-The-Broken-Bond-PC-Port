@@ -26,12 +26,11 @@ struct Dispatcher::State {
   std::mutex mutex;
   std::mutex lifecycle;
   std::condition_variable wake;
+  // The session's failure channel, shared with the engine.
+  const std::shared_ptr<FailureChannel> failures = std::make_shared<FailureChannel>();
   // Posted operations (mutex).
   size_t posted_pending = 0;
-  uint64_t posted = 0, posted_dropped = 0, posted_failed_sequence = 0;
-  bool posted_failed = false;
-  std::atomic<bool> posted_failed_flag{false};  // The lock-free answer of PostedFailure.
-  std::string posted_evidence;
+  uint64_t posted = 0, posted_dropped = 0;
   std::condition_variable posted_space;
   // The open draw batch (mutex) and its counters.
   std::vector<DrawRequest> draw_batch;
@@ -129,30 +128,27 @@ struct Dispatcher::State {
   // the caller; the wait for room releases it). Shared by Post and the
   // draw batches.
   bool PostLocked(std::unique_lock<std::mutex>& lock, std::function<bool(Engine&, std::string&)> operation) {
-    if (!dedicated || !initialized || closing || stopped || posted_failed) return false;
-    posted_space.wait(lock, [&] { return posted_pending < Dispatcher::kPostedMax || posted_failed || stopped; });
-    if (posted_failed || stopped) return false;
+    if (!dedicated || !initialized || closing || stopped || failures->Failed()) return false;
+    posted_space.wait(lock, [&] { return posted_pending < Dispatcher::kPostedMax || failures->Failed() || stopped; });
+    if (failures->Failed() || stopped) return false;
     ++posted_pending;
     const uint64_t sequence = ++posted;
     Queue([this, sequence, operation = std::move(operation)] {
       // After a failure the engine itself refuses every operation; a posted
-      // one is dropped unexecuted, and the first failure is latched in the engine.
-      const bool drop = !engine || engine->Latched();
+      // one is dropped unexecuted. The first failure is retained in the
+      // channel (outside the dispatcher's lock: its wakers take it).
+      const bool drop = !engine || failures->Failed();
       std::string raw;
       bool ok = true;
       if (!drop) {
         profile::Timer engine_time(profile::kEngineOperation);
         ok = operation(*engine, raw);
-        if (!ok) engine->LatchFailure(sequence, raw);
+        if (!ok)
+          failures->Retain({sequence, FailureChannel::kPostedOperation,
+                            raw.empty() ? "{\"reason\":\"engine-missing\"}" : raw});
       }
       std::lock_guard guard(mutex);
       if (drop) ++posted_dropped;
-      if (!ok && !posted_failed) {
-        posted_failed = true;
-        posted_failed_sequence = sequence;
-        posted_evidence = raw.empty() ? "{\"reason\":\"engine-missing\"}" : raw;
-        posted_failed_flag.store(true, std::memory_order_release);
-      }
       --posted_pending;
       posted_space.notify_all();
     });
@@ -166,8 +162,8 @@ struct Dispatcher::State {
   enum class Flush { Full, Operation, Run, Close };
   bool FlushDrawsLocked(std::unique_lock<std::mutex>& lock, Flush why) {
     if (draw_batch.empty()) return true;
-    if (!dedicated || !initialized || closing || stopped || posted_failed) { draw_batch.clear(); return false; }
-    posted_space.wait(lock, [&] { return posted_pending < Dispatcher::kPostedMax || posted_failed || stopped; });
+    if (!dedicated || !initialized || closing || stopped || failures->Failed()) { draw_batch.clear(); return false; }
+    posted_space.wait(lock, [&] { return posted_pending < Dispatcher::kPostedMax || failures->Failed() || stopped; });
     if (draw_batch.empty()) return true;  // Another flush took it meanwhile.
     auto batch = std::make_shared<std::vector<DrawRequest>>(std::move(draw_batch));
     draw_batch.clear();
@@ -241,7 +237,14 @@ class WorkTask final : public StageTask {
 }  // namespace
 
 Dispatcher::Dispatcher(bool dedicatedOwner, bool deferredTranslation)
-    : state_(std::make_unique<State>(dedicatedOwner, dedicatedOwner && deferredTranslation)) {}
+    : state_(std::make_unique<State>(dedicatedOwner, dedicatedOwner && deferredTranslation)) {
+  // A retained failure wakes the producers waiting for room: they return refused.
+  State* const s = state_.get();
+  s->failures->OnRetained([s] {
+    std::lock_guard lock(s->mutex);
+    s->posted_space.notify_all();
+  });
+}
 Dispatcher::~Dispatcher() {
   std::string evidence;
   if (!Shutdown(evidence)) std::_Exit(88);
@@ -252,7 +255,7 @@ bool Dispatcher::Initialize(std::string& evidence, const RenderMode& mode) {
   auto result = std::make_shared<std::promise<std::pair<bool, std::string>>>();
   auto future = result->get_future();
   auto initialize = [this, result, mode] {
-    state_->engine = std::make_unique<Engine>();
+    state_->engine = std::make_unique<Engine>(state_->failures);
     std::string raw;
     bool ok = state_->engine->Initialize(raw, mode);
     result->set_value({ok, state_->dedicated ? fmt::format(
@@ -279,6 +282,10 @@ bool Dispatcher::Initialize(std::string& evidence, const RenderMode& mode) {
 std::string Dispatcher::DeviceName() const {
   std::lock_guard lifecycle(state_->lifecycle);
   return state_->engine ? state_->engine->DeviceName() : std::string();
+}
+GraphicsApi Dispatcher::Api() const {
+  std::lock_guard lifecycle(state_->lifecycle);
+  return state_->engine ? state_->engine->Api() : RenderMode{}.api;
 }
 
 bool Dispatcher::InitializeFrontend(uint64_t generation, std::string& evidence) {
@@ -411,7 +418,7 @@ bool Dispatcher::PostDraw(DrawRequest&& request) {
   if (state_->deferred && !OnTranslator())  // A ready request of the title, in order with the captures.
     return Enqueue(std::make_unique<DrawRequestTask>(*this, std::move(request)));
   std::unique_lock lock(state_->mutex);
-  if (!state_->dedicated || !state_->initialized || state_->closing || state_->stopped || state_->posted_failed)
+  if (!state_->dedicated || !state_->initialized || state_->closing || state_->stopped || state_->failures->Failed())
     return false;
   if (state_->draw_batch.capacity() < kDrawBatchMax) state_->draw_batch.reserve(kDrawBatchMax);
   state_->draw_batch.push_back(std::move(request));
@@ -428,14 +435,21 @@ std::string Dispatcher::DrawBatchSummary() {
                      state_->batch_flush_close, state_->posted);
 }
 
+FailureChannel& Dispatcher::Failures() const { return *state_->failures; }
+
 bool Dispatcher::PostedFailure(std::string& evidence) {
-  if (!state_->posted_failed_flag.load(std::memory_order_acquire)) return false;
+  const FailureChannel& failures = *state_->failures;
+  if (!failures.Failed()) return false;
+  const auto failure = failures.First();
+  const uint64_t later = failures.Later();
   std::lock_guard lock(state_->mutex);
-  if (!state_->posted_failed) return false;
-  evidence = fmt::format("{{\"posted_failed\":true,\"failed_sequence\":{},\"posted\":{},\"posted_after_failure\":{},"
-                         "\"dropped\":{},\"engine\":{}}}", state_->posted_failed_sequence, state_->posted,
-                         state_->posted - state_->posted_failed_sequence, state_->posted_dropped,
-                         state_->posted_evidence);
+  // How many operations were posted after it, for a posted operation's failure.
+  const std::string after = failure->source == FailureChannel::kPostedOperation ?
+      std::to_string(state_->posted - failure->sequence) : std::string("null");
+  evidence = fmt::format("{{\"posted_failed\":true,\"source\":\"{}\",\"failed_sequence\":{},\"posted\":{},"
+                         "\"posted_after_failure\":{},\"dropped\":{},\"later_failures\":{},\"session\":{},"
+                         "\"engine\":{}}}", failure->source, failure->sequence, state_->posted, after,
+                         state_->posted_dropped, later, failures.Session(), failure->evidence);
   return true;
 }
 

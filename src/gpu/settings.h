@@ -45,6 +45,7 @@ struct Settings {
   // The native renderer's adapter (settings.cpp defines the option): the adapter by
   // its name; empty keeps the one with the most dedicated video memory.
   std::string graphics_device;        // graphics_device
+  std::string native_backend;         // d3d12 or vulkan; fixed for the session.
 };
 
 // Registers the options of the Xenos plugin under its names, once, when the

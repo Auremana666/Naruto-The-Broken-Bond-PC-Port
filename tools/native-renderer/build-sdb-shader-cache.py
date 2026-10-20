@@ -34,7 +34,9 @@ STUB = '\nuint g_SpecConstants() { return 0; }\n'
 # not compile ("undeclared identifier 's16_Texture1DDescriptorIndex'").
 # Their descriptor indices go to c18 (texture) and c19 (sampler) of the shared
 # constants, one component per register (the engine writes them at bytes 288 and
-# 304 + 4 * (register - 16)); c0 to c15 stay for registers 0 to 15. A 1D texture
+# 304 + 4 * (register - 16)); c0 to c15 stay for registers 0 to 15. The SPIR-V
+# branch reads the same bytes by the address of the shared constants, as
+# XenosRecomp defines the indices of registers 0 to 15 there. A 1D texture
 # is bound as a 2D texture one texel high and sampled at level 0, as a vertex
 # shader has no derivatives. XenosRecomp has no vertex textures; this is a
 # change to its output.
@@ -64,6 +66,13 @@ def patch_vertex_textures(text: str):
     if text.count(anchor) != 1:
         raise ValueError('shared-constants-anchor')
     text = text.replace(anchor, declarations + anchor, 1)
+    addresses = ''.join(
+        f'#define s{register}_{kind}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + '
+        f'{(304 if kind == "Sampler" else 288) + 4 * (int(register) - 16)})\n' for register, kind in found)
+    anchor = '#else\n\ncbuffer VertexShaderConstants'
+    if text.count(anchor) != 1:
+        raise ValueError('spirv-constants-anchor')
+    text = text.replace(anchor, addresses + '\n' + anchor, 1)
     if 'tfetch1D(' in text and 'float4 tfetch1D(' not in text:
         anchor = 'cbuffer VertexShaderConstants'
         if text.count(anchor) != 1:

@@ -78,6 +78,16 @@ option(BROKENBOND_LAUNCHER_NATIVE_RENDERER "Offer native settings for an executa
 if(BROKENBOND_LAUNCHER_NATIVE_RENDERER)
     target_compile_definitions(broken_bond_launcher PRIVATE BROKENBOND_LAUNCHER_NATIVE_RENDERER=1)
     target_compile_definitions(broken_bond_launcher_test PRIVATE BROKENBOND_LAUNCHER_NATIVE_RENDERER=1)
+    if(BROKENBOND_NATIVE_VULKAN)
+        target_compile_definitions(broken_bond_launcher PRIVATE BROKENBOND_LAUNCHER_NATIVE_VULKAN=1)
+        target_compile_definitions(broken_bond_launcher_test PRIVATE BROKENBOND_LAUNCHER_NATIVE_VULKAN=1)
+        target_include_directories(broken_bond_launcher PRIVATE
+            "${NATIVE_RENDERER_PLUME_SOURCE}/contrib/Vulkan-Headers/include")
+    endif()
+    if(DEFINED BROKENBOND_NATIVE_D3D12 AND NOT BROKENBOND_NATIVE_D3D12)
+        target_compile_definitions(broken_bond_launcher PRIVATE BROKENBOND_LAUNCHER_NATIVE_D3D12_DISABLED=1)
+        target_compile_definitions(broken_bond_launcher_test PRIVATE BROKENBOND_LAUNCHER_NATIVE_D3D12_DISABLED=1)
+    endif()
 endif()
 
 add_executable(broken_bond_key_bindings_test EXCLUDE_FROM_ALL

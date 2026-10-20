@@ -13,12 +13,23 @@ inline constexpr bool kNativeRendererBuilt = true;
 #else
 inline constexpr bool kNativeRendererBuilt = false;
 #endif
+#if defined(BROKENBOND_LAUNCHER_NATIVE_VULKAN)
+inline constexpr bool kNativeVulkanBuilt = true;
+#else
+inline constexpr bool kNativeVulkanBuilt = false;
+#endif
+#if defined(BROKENBOND_LAUNCHER_NATIVE_D3D12_DISABLED)
+inline constexpr bool kNativeD3d12Built = false;
+#else
+inline constexpr bool kNativeD3d12Built = true;
+#endif
 
 struct GameConfig {
   std::string gpu_plugin = "xenos";
-  // "xenos" (the default) or "native" (Direct3D 12); saved
+  // "xenos" (the default) or "native" (native_backend); saved
   // only when the executable carries the native renderer.
   std::string renderer = "xenos";
+  std::string native_backend = kNativeD3d12Built ? "d3d12" : "vulkan";
   // The graphics card by its name, for both renderers; empty = automatic.
   std::string graphics_device = "";
   bool skip_intro_videos = true;

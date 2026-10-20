@@ -25,12 +25,18 @@ set(BROKENBOND_SOURCES
     src/intro_skip.cpp
 )
 
-# The native renderer (opt-in): the Rise of a Ninja D3D12 renderer adapted to
+# The native renderer (opt-in): the Rise of a Ninja renderer adapted to
 # Broken Bond, chosen at launch in place of the Xenos plugin (renderer = "native"
 # in broken_bond.toml). The executable keeps the Xenos plugin as the default.
-# See docs/native-renderer/README.md.
+# See docs/renderers.md.
 option(BROKENBOND_NATIVE_RENDERER "Build the native renderer next to the Xenos plugin" OFF)
+option(BROKENBOND_NATIVE_D3D12 "Build the native Direct3D 12 backend" ON)
+option(BROKENBOND_NATIVE_VULKAN "Build the native Vulkan backend and SPIR-V shaders" OFF)
+option(BROKENBOND_NATIVE_TESTS "Build the native backend host tests" OFF)
 if(BROKENBOND_NATIVE_RENDERER)
+    if(NOT BROKENBOND_NATIVE_D3D12 AND NOT BROKENBOND_NATIVE_VULKAN)
+        message(FATAL_ERROR "Enable at least one native backend")
+    endif()
     list(APPEND BROKENBOND_SOURCES
          # The host: configuration, guest kernel exports and the frame lifecycle.
          src/gpu/host/host.cpp src/gpu/host/kernel_video.cpp src/gpu/host/kernel_threading.cpp
@@ -38,13 +44,14 @@ if(BROKENBOND_NATIVE_RENDERER)
          src/gpu/host/graphics.cpp src/gpu/host/frame_completion.cpp src/gpu/host/guest_hooks.cpp src/gpu/host/exports.cpp
          src/gpu/host/title_loading.cpp
          # The backend: the D3D12 engine, its pipeline set, its dispatcher and the title-thread witness.
-         src/gpu/backend/engine.cpp src/gpu/backend/pipeline_set.cpp src/gpu/backend/dispatcher.cpp
+         src/gpu/backend/engine.cpp src/gpu/backend/failure_channel.cpp
+         src/gpu/backend/pipeline_keys.cpp src/gpu/backend/pipeline_set.cpp src/gpu/backend/dispatcher.cpp
          src/gpu/backend/title_witness.cpp
          # The D3D boundary of the native renderer, one unit per responsibility.
          src/gpu/d3d/hooks.cpp src/gpu/d3d/device.cpp src/gpu/d3d/resources.cpp
          src/gpu/d3d/pass.cpp src/gpu/d3d/draw.cpp src/gpu/d3d/state.cpp
          src/gpu/d3d/present.cpp src/gpu/d3d/frame.cpp src/gpu/d3d/close.cpp src/gpu/d3d/query.cpp
-         src/gpu/shaders/shaders.cpp src/gpu/shaders/pipelines.cpp
+         src/gpu/shaders/shaders.cpp src/gpu/shaders/package.cpp src/gpu/shaders/pipelines.cpp
          src/gpu/textures/textures.cpp src/gpu/textures/write_watch.cpp src/gpu/textures/formats.cpp
          src/gpu/textures/layout.cpp
          src/gpu/buffers/buffers.cpp src/gpu/buffers/vertex_layout.cpp
@@ -83,15 +90,36 @@ endif()
 
 if(BROKENBOND_NATIVE_RENDERER)
     if(NOT WIN32)
-        message(FATAL_ERROR "The native renderer requires Windows (Direct3D 12)")
+        message(FATAL_ERROR "The native renderer requires Windows")
     endif()
     include(${CMAKE_CURRENT_SOURCE_DIR}/tools/native-renderer/plume-engine.cmake)
     target_include_directories(broken_bond PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(broken_bond PRIVATE native_renderer_plume)
+    if(BROKENBOND_NATIVE_D3D12)
+        target_sources(broken_bond PRIVATE src/gpu/backend/d3d12/backend.cpp)
+        target_link_libraries(broken_bond PRIVATE native_renderer_plume)
+    else()
+        target_compile_definitions(broken_bond PRIVATE BROKENBOND_NATIVE_D3D12_DISABLED=1)
+    endif()
+    set(BROKENBOND_NATIVE_VULKAN_SOURCES src/gpu/backend/vulkan/backend.cpp
+        src/gpu/backend/vulkan/completion.cpp src/gpu/backend/vulkan/shader_contract.cpp)
+    set(native_shader_options)
+    if(BROKENBOND_NATIVE_VULKAN)
+        target_sources(broken_bond PRIVATE ${BROKENBOND_NATIVE_VULKAN_SOURCES})
+        target_link_libraries(broken_bond PRIVATE native_renderer_plume_vulkan)
+        target_compile_definitions(broken_bond PRIVATE BROKENBOND_NATIVE_VULKAN=1)
+        set(native_shader_options SPIRV PASSES src/gpu/backend)
+    endif()
     target_compile_definitions(broken_bond PRIVATE BROKENBOND_NATIVE_RENDERER_BOOTSTRAP=1)
     # The shader cache generated from the local game files (game/xeshader.sdb).
     include(${CMAKE_CURRENT_SOURCE_DIR}/tools/native-renderer/shader-cache.cmake)
-    brokenbond_shader_cache(broken_bond src/gpu/shaders/shader_cache_data.cpp)
+    brokenbond_shader_cache(broken_bond src/gpu/shaders/shader_cache_data.cpp ${native_shader_options})
+    if(BROKENBOND_NATIVE_TESTS)
+        if(NOT BROKENBOND_NATIVE_VULKAN)
+            message(FATAL_ERROR "BROKENBOND_NATIVE_TESTS requires BROKENBOND_NATIVE_VULKAN")
+        endif()
+        enable_testing()
+        include(tools/native-renderer/backend-tests.cmake)
+    endif()
 endif()
 
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
