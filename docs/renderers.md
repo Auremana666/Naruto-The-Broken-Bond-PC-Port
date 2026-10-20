@@ -64,14 +64,14 @@ The graphics driver keeps compiled pipelines in its own cache between sessions, 
 
 ## Known issues
 
-| Issue | Renderer | Details |
-| --- | --- | --- |
-| Short pause when something new appears | Native | A pipeline outside the startup list compiles the first time it appears on a given driver, and the draw waits for it. New areas of the open world can stutter on the first visit; later visits do not |
-| Frame rates above 60 not yet played | Native | `frame_rate` accepts up to 240, but only 60 has been played; see [Frame rate](#frame-rate) |
-| Diagnostic mode stops the game | Native | `REX_NATIVE_DIAGNOSTICS=1` stops the game during device creation; leave it unset |
-| No sound | Both | The SDK opens the Windows default playback device at startup; see [Troubleshooting](troubleshooting.md#no-sound) |
-| Sounds missing late in a session | Both | Reported once, before the audio fixes; not seen since, but not checked specifically |
+| Issue | Details |
+| --- | --- |
+| Short pause when something new appears | A pipeline outside the startup list compiles the first time it appears on a given driver, and the draw waits for it. New areas of the open world can stutter on the first visit; later visits do not |
+| Frame rates above 60 not yet played | `frame_rate` accepts up to 240, but only 60 has been played; see [Frame rate](#frame-rate) |
+| Diagnostic mode stops the game | `REX_NATIVE_DIAGNOSTICS=1` stops the game during device creation; leave it unset |
+| No sound | The SDK opens the Windows default playback device at startup; see [Troubleshooting](troubleshooting.md#no-sound) |
+| Sounds missing late in a session | Reported once, before the audio fixes; not seen since, but not checked specifically |
 
 ## Reporting problems
 
-Include the renderer, the graphics card and driver, the internal resolution, the native renderer's options if you changed them, and the log of the run. For a run started by `run-game.ps1`, the journal next to the log (`.native.jsonl`) helps too.
+Include the graphics card and driver, the internal resolution, the renderer options if you changed them, and the log of the run. For a run started by `run-game.ps1`, the journal next to the log (`.native.jsonl`) helps too.
