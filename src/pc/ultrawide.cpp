@@ -28,6 +28,8 @@ REXCVAR_DEFINE_STRING(aspect_ratio, "16:9", "Display",
                       "Aspect ratio of the picture: 16:9, 21:9, 32:9 or auto (the screen's)")
     .allowed({"16:9", "21:9", "32:9", "auto"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(field_of_view, 1.0, "Display",
+                      "Factor on the camera's field of view (1 = the game's own, up to 1.5)");
 REXCVAR_DEFINE_BOOL(ultrawide_probe, false, "Display",
                     "Log shader constants that look like a 16:9 projection (diagnostics)");
 REXCVAR_DEFINE_DOUBLE(ultrawide_target_aspect, 0.0, "Display",
@@ -105,4 +107,9 @@ void UpdateUltrawide(uint8_t* base) {
   g_applied_factor = factor;
   REXLOG_INFO("[ultrawide] aspect {:.4f}, view width factor {:.6f}", wide ? aspect : kNativeAspect,
               factor);
+}
+
+float FieldOfViewScale() {
+  const double scale = REXCVAR_GET(field_of_view);
+  return scale > 0.5 && scale < 1.6 ? static_cast<float>(scale) : 1.0f;
 }

@@ -101,3 +101,6 @@ log_to_file = false
 
 # Aspect ratio: 16:9, 21:9, 32:9 or auto (PC Options > Display).
 aspect_ratio = "16:9"
+
+# Field of view: 1 = the game's own, up to 1.4 (PC Options > Display).
+field_of_view = 1.0

@@ -328,6 +328,14 @@ void OptionsMenu::BuildPages() {
                                  {{"16:9", "16:9"}, {"21:9", "21:9"}, {"32:9", "32:9"},
                                   {"AUTOMATIC", "auto"}},
                                  "Wider screens see more of the world. Automatic matches your screen."));
+  display.items.push_back(choice("FIELD OF VIEW", "field_of_view",
+                                 {{"90%", "0.9"},
+                                  {"ORIGINAL", "1"},
+                                  {"110%", "1.1"},
+                                  {"120%", "1.2"},
+                                  {"130%", "1.3"},
+                                  {"140%", "1.4"}},
+                                 "How much of the world the camera shows. Changes right away."));
   display.items.push_back(toggle("VERTICAL SYNC", "vsync", "Removes tearing. On some screens it lowers the frame rate, so it starts off."));
   display.items.push_back(toggle("G-SYNC / FREESYNC", "d3d12_allow_variable_refresh_rate_and_tearing",
                                  "Lets a variable refresh rate monitor follow the game."));

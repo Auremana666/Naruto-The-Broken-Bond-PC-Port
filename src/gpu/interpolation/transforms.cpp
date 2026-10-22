@@ -29,6 +29,7 @@ extern "C" void __imp__sub_82764A08(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82BD9108(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82B97DE8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82120A70(PPCContext& __restrict, uint8_t*);
+float FieldOfViewScale();  // pc/ultrawide.cpp
 
 namespace gpu::interpolation {
 namespace {
@@ -789,7 +790,19 @@ REX_HOOK_RAW(sub_82764A08) {
 }
 REX_HOOK_RAW(sub_82BD9108) {
   gpu::interpolation::CameraEntry(base, ctx.r3.u32);
+  // PC field of view: the entry's vertical field of view (+148, radians)
+  // scaled for this build of the view's projection only, then put back so the
+  // logic keeps its own value.
+  const uint32_t entry = ctx.r3.u32;
+  const float scale = FieldOfViewScale();
+  const bool widen = entry && scale != 1.0f;
+  const uint32_t fov_bits = widen ? gpu::Get32(base, entry + 148) : 0;
+  if (widen) {
+    const float fov = gpu::GetFloat(base, entry + 148);
+    if (std::isfinite(fov) && fov > 0.0f) gpu::PutFloat(base, entry + 148, std::min(fov * scale, 2.8f));
+  }
   __imp__sub_82BD9108(ctx, base);
+  if (widen) gpu::Put32(base, entry + 148, fov_bits);
 }
 REX_HOOK_RAW(sub_82B97DE8) {
   std::vector<gpu::interpolation::Written> pose;
