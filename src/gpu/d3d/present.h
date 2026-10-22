@@ -30,6 +30,9 @@ std::string PresentFile(const std::string& name, const std::vector<uint8_t>& byt
 void MaybePostClose(uint64_t swap);
 // First own Swap: the swapchain on the SDK window, before the first frame end.
 void AttachPresentation(PPCContext& ctx);
+// The PC overlay's frames while the game presents nothing (app start to close).
+void StartIdlePresenter();
+void StopIdlePresenter();
 // The ramp of the title when SetGammaRamp marked it pending (bit 1 of +16708).
 void PostGammaRamp(PPCContext& ctx, uint8_t* base, uint32_t dev);
 // The copy of the front buffer for this Swap's flip, in the frame lot.

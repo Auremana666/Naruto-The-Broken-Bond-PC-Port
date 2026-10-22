@@ -65,6 +65,7 @@ class Engine final {
   // The swapchain follows the window size. A minimized (empty) window skips
   // the frame. With capture, the back buffer is read back after the pass
   // (BGRA rows, its size in width and height) and the call waits for it.
+  bool PresentIdle(std::string& evidence);
   bool Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, uint32_t& width, uint32_t& height,
                std::string& evidence);
   // Live own resources (textures of guest headers, surfaces, stage slots).

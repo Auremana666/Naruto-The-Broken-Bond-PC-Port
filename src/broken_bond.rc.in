@@ -1,4 +1,8 @@
-// The executable's icon, shared with the launcher: Windows shows the first
-// icon resource in the taskbar and the title bar (SDL takes it for the window
-// class), and Explorer shows it on the file.
-1 ICON "@CMAKE_CURRENT_SOURCE_DIR@/launcher/assets/favicon.ico"
+// Windows resources: the program icon (Explorer, the taskbar and the window use
+// icon 1), and the title screen pictures and the menu font (Titan One, with its
+// SIL OFL license), kept inside the executable.
+1 ICON "@CMAKE_CURRENT_SOURCE_DIR@/assets/icon/naruto.ico"
+101 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/assets/title/naruto.png"
+104 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/assets/title/logo.png"
+105 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/assets/fonts/TitanOne-Regular.ttf"
+106 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/assets/fonts/TitanOne-OFL.txt"

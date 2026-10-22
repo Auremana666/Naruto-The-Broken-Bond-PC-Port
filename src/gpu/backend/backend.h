@@ -68,6 +68,12 @@ class Backend {
   virtual bool StageFront(uint32_t key, uint32_t& slot, std::string& evidence) = 0;
   virtual bool Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, uint32_t& width, uint32_t& height,
                        std::string& evidence) = 0;
+  // A frame without a game image (black) under the PC overlay, while the game
+  // presents nothing (gpu/overlay.h). The default presents nothing.
+  virtual bool PresentIdle(std::string& evidence) {
+    evidence = "{\"presented\":false}";
+    return true;
+  }
   virtual std::string ResourceCounts() = 0;
   virtual bool ReleaseTexture(uint32_t key, std::string& evidence) = 0;
   virtual bool ReleaseSampled(uint32_t address, std::string& evidence) = 0;

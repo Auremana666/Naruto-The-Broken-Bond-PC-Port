@@ -38,6 +38,7 @@
 #include "gpu/backend/depth_resolve.h"  // kDepthResolveVs, ...MsPs, ...SinglePs (DXIL).
 #include "gpu/backend/sample_resolve.h"  // kSampleResolvePs (DXIL).
 #include "gpu/backend/sdk_shaders.h"   // CAS, FSR1, bilinear and FXAA of the SDK (DXBC).
+#include "gpu/backend/d3d12/overlay_renderer.h"  // The PC overlay over the back buffer.
 
 namespace plume { std::unique_ptr<RenderInterface> CreateD3D12Interface(); }
 
@@ -156,6 +157,7 @@ class Backend final : public gpu::Backend {
   bool SetGammaRamp(const std::array<uint16_t, 768>& words, std::string& evidence) override;
   bool SetVsync(bool enabled, std::string& evidence) override;
   bool StageFront(uint32_t key, uint32_t& slot, std::string& evidence) override;
+  bool PresentIdle(std::string& evidence) override;
   bool Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, uint32_t& width, uint32_t& height,
                std::string& evidence) override;
   std::string ResourceCounts() override;
@@ -437,6 +439,7 @@ struct Backend::State {
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> present_views;  // Stage SRVs, then the effect views.
   Microsoft::WRL::ComPtr<ID3D12RootSignature> present_root;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> present_pipeline;
+  OverlayRenderer overlay;  // The PC overlay, drawn last.
   // The output effects (OutputPlan). Target 0 holds the ramp at the source
   // size (R10G10B10A2, the SDK's guest output; R16G16B16A16 with the luma when
   // FXAA follows), target 1 the FXAA result, targets 2 on the chain's
@@ -885,6 +888,7 @@ bool Backend::Shutdown(std::string& evidence) {
   // The swapchain and its views; their last use completed above.
   const bool swapchain_released = state_->swapchain != nullptr;
   state_->present_rtv.Reset();
+  state_->overlay.Release();
   state_->swapchain.reset();
   state_->window = nullptr;
   for (auto& stage : state_->stages) stage = {};
@@ -1791,6 +1795,96 @@ bool Backend::StageFront(uint32_t key, uint32_t& slot, std::string& evidence) {
   return true;
 }
 
+// A black frame under the PC overlay, while the game presents nothing (the
+// PC title screen holds the boot; long loads). The window's back buffer only:
+// the stage slots and the game's frames are untouched.
+bool Backend::PresentIdle(std::string& evidence) {
+  auto fail = [&](const char* reason, HRESULT hr = E_FAIL) {
+    evidence = fmt::format("{{\"presented\":false,\"reason\":\"{}\",\"hresult\":{}}}", reason,
+                           static_cast<uint32_t>(hr));
+    return false;
+  };
+  if (!state_->ready || state_->owner_thread != GetCurrentThreadId() || state_->operation_poisoned ||
+      state_->unproved_execution) return fail("native-idle-owner-or-state");
+  if (!state_->swapchain) return fail("native-idle-no-swapchain");
+  auto* native = static_cast<plume::D3D12SwapChain*>(state_->swapchain.get());
+  auto* device = static_cast<plume::D3D12Device*>(state_->device.get());
+  HRESULT hr = S_OK;
+  if (state_->swapchain->needsResize()) {
+    std::string idle;
+    if (!WaitIdle(idle)) return fail("native-idle-resize-wait");
+    state_->present_rtv.Reset();
+    if (state_->swapchain->resize()) {
+      if (!state_->BackBufferViews(hr)) return fail("native-idle-resize-views", hr);
+      ++state_->resizes;
+    } else if (!state_->swapchain->isEmpty()) {
+      return fail("native-idle-resize");
+    }
+  }
+  if (state_->swapchain->isEmpty() || !state_->present_rtv) {
+    evidence = "{\"presented\":false,\"skipped\":\"window-empty\"}";
+    return true;
+  }
+  if (native->waitableObject) WaitForSingleObject(native->waitableObject, 100);
+  const uint32_t w = native->getWidth(), h = native->getHeight();
+  uint32_t index = 0;
+  if (!state_->swapchain->acquireTexture(nullptr, &index) || index >= state_->swap_buffers)
+    return fail("native-idle-acquire");
+  auto* back = static_cast<plume::D3D12Texture*>(state_->swapchain->getTexture(index));
+  const char* batch_reason = nullptr;
+  if (!state_->OpenBatch(batch_reason, hr)) return fail(batch_reason, hr);
+  ID3D12GraphicsCommandList* const commands = state_->batch_list.Get();
+  D3D12_RESOURCE_BARRIER b{};
+  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b.Transition.pResource = back->d3d;
+  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+  b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+  commands->ResourceBarrier(1, &b);
+  auto rtv = state_->present_rtv->GetCPUDescriptorHandleForHeapStart();
+  rtv.ptr += SIZE_T(device->d3d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)) * index;
+  const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  commands->ClearRenderTargetView(rtv, black, 0, nullptr);
+  {
+    const auto upload = [&](size_t bytes, OverlayRenderer::Upload& memory) {
+      State::UploadPage* overlay_page = nullptr;
+      size_t at = 0;
+      HRESULT upload_hr = S_OK;
+      if (!state_->Upload(bytes, overlay_page, at, upload_hr)) return false;
+      memory.buffer = overlay_page->buffer.Get();
+      memory.offset = at;
+      memory.cpu = overlay_page->cpu + at;
+      memory.gpu = overlay_page->gpu + at;
+      return true;
+    };
+    const auto retain = [&](Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
+      state_->batch.retained.push_back(std::move(resource));
+    };
+    if (!state_->overlay.Draw(device->d3d, commands, rtv, w, h, upload, retain)) return fail("native-idle-overlay");
+  }
+  state_->batch.draw_bindings = false;
+  std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+  commands->ResourceBarrier(1, &b);
+  ++state_->batch.operations;
+  ++state_->operations;
+  if (!state_->CloseBatch(batch_reason, hr)) return fail(batch_reason, hr);
+  if (FAILED(hr = native->d3d->Present(1, 0))) return fail("native-idle-swapchain", hr);
+  {
+    auto* queue = static_cast<plume::D3D12CommandQueue*>(state_->queue.get());
+    auto* fence = static_cast<plume::D3D12CommandFence*>(state_->fence.get());
+    const uint64_t after = fence->fenceValue;
+    if (!after || after == UINT64_MAX) return fail("native-idle-fence-exhausted");
+    if (FAILED(hr = queue->d3d->Signal(fence->d3d, after))) {
+      state_->operation_poisoned = true;
+      return fail("native-idle-signal", hr);
+    }
+    state_->pending_signal = after;
+    ++fence->fenceValue;
+  }
+  evidence = "{\"presented\":true}";
+  return true;
+}
+
 bool Backend::Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, uint32_t& width,
                                    uint32_t& height, std::string& evidence) {
   bgra.clear();
@@ -1840,9 +1934,13 @@ bool Backend::Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, u
   }
   QueryPerformanceCounter(&t1);
   const uint32_t w = native->getWidth(), h = native->getHeight();
-  // Largest rect of the image's aspect, centered; the rest is black.
-  const double fit = std::min(double(w) / stage.width, double(h) / stage.height);
-  const uint32_t vw = std::clamp<uint32_t>(uint32_t(std::lround(stage.width * fit)), 1, w);
+  // Largest rect of the image's aspect, centered; the rest is black. With
+  // ultrawide on, the aspect of the setting: the game drew a wider view
+  // into its 16:9 image, which this stretches back out.
+  const double ultrawide = overlay::TargetAspect();
+  const double image_width = ultrawide > 1.8 ? stage.height * ultrawide : double(stage.width);
+  const double fit = std::min(double(w) / image_width, double(h) / stage.height);
+  const uint32_t vw = std::clamp<uint32_t>(uint32_t(std::lround(image_width * fit)), 1, w);
   const uint32_t vh = std::clamp<uint32_t>(uint32_t(std::lround(stage.height * fit)), 1, h);
   const uint32_t vx = (w - vw) / 2, vy = (h - vh) / 2;
   // The output effects and their targets, (re)created once no submitted
@@ -1944,6 +2042,24 @@ bool Backend::Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, u
     commands->SetGraphicsRoot32BitConstants(2, 2, extent, 6);
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commands->DrawInstanced(3, 1, 0, 0);
+  }
+  // The PC overlay (options menu, title screen, FPS counter) over the image.
+  {
+    const auto upload = [&](size_t bytes, OverlayRenderer::Upload& memory) {
+      State::UploadPage* overlay_page = nullptr;
+      size_t at = 0;
+      HRESULT upload_hr = S_OK;
+      if (!state_->Upload(bytes, overlay_page, at, upload_hr)) return false;
+      memory.buffer = overlay_page->buffer.Get();
+      memory.offset = at;
+      memory.cpu = overlay_page->cpu + at;
+      memory.gpu = overlay_page->gpu + at;
+      return true;
+    };
+    const auto retain = [&](Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
+      state_->batch.retained.push_back(std::move(resource));
+    };
+    if (!state_->overlay.Draw(device->d3d, commands, rtv, w, h, upload, retain)) return fail("native-present-overlay");
   }
   // The draw layer binds its own heaps, root signature and tables again.
   state_->batch.draw_bindings = false;

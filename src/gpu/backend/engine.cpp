@@ -124,6 +124,10 @@ bool Engine::Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, ui
   if (Refused(evidence)) return false;
   return backend_ ? backend_->Present(slot, capture, bgra, width, height, evidence) : NoBackend(evidence);
 }
+bool Engine::PresentIdle(std::string& evidence) {
+  if (Refused(evidence)) return false;
+  return backend_ ? backend_->PresentIdle(evidence) : NoBackend(evidence);
+}
 std::string Engine::ResourceCounts() { return backend_ ? backend_->ResourceCounts() : std::string("{}"); }
 bool Engine::ReleaseTexture(uint32_t key, std::string& evidence) {
   return backend_ ? backend_->ReleaseTexture(key, evidence) : NoBackend(evidence);

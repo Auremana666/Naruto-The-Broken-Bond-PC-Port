@@ -39,3 +39,6 @@ __pycache__/
 /tools/xenosrecomp/thirdparty/smol-v/
 /tools/xenosrecomp/thirdparty/xxHash/
 /tools/xenosrecomp/thirdparty/zstd/
+
+# Hidden title screen extra (kept out of the public source)
+/assets/secret/

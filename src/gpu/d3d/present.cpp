@@ -11,6 +11,7 @@
 #include "gpu/common/guest_memory.h"
 #include "gpu/common/sha256.h"
 #include "gpu/settings.h"
+#include "gpu/overlay.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -150,7 +151,35 @@ void MaybePostClose(uint64_t swap) {
 }
 std::atomic<bool> window_attached{false};
 // First own Swap: the swapchain on the SDK window, before the first frame end.
+std::mutex attach_mutex;
+// The swapchain without a guest context: the PC overlay's idle presents may
+// attach it before the first own Swap. False when it could not.
+bool AttachPresentationHost() {
+  std::lock_guard lock(attach_mutex);
+  if (window_attached.load()) return true;
+  HWND hwnd = DisplayHwnd();
+  auto* dispatcher = host::ActiveDispatcher();
+  if (!hwnd || !dispatcher) return false;
+  std::string evidence;
+  const auto& settings = CurrentSettings();
+  PresentMode mode{settings.vsync, settings.allow_tearing, settings.triple_buffering ? 3u : 2u,
+                   settings.max_frame_latency};
+  mode.brightness = settings.brightness;
+  mode.effect = settings.present_effect;
+  mode.post_effect = settings.swap_post_effect;
+  mode.cas_sharpness = settings.cas_additional_sharpness;
+  mode.fsr_sharpness_reduction = settings.fsr_sharpness_reduction;
+  mode.fsr_passes = settings.fsr_max_passes;
+  const bool attached = dispatcher->Run([hwnd, mode](Engine& engine, std::string& out) {
+    return engine.AttachWindow(hwnd, out, mode); }, evidence);
+  host::Record("native-present-attach", fmt::format("\"attached\":{},\"idle\":true,\"engine\":{},{}", attached,
+                           evidence.empty() ? "null" : evidence, WindowFacts(hwnd)));
+  if (attached) window_attached.store(true);
+  return attached;
+}
 void AttachPresentation(PPCContext& ctx) {
+  std::lock_guard lock(attach_mutex);
+  if (window_attached.load()) return;  // Attached by an idle present.
   HWND hwnd = DisplayHwnd();
   if (!hwnd) StopInOrder(ctx, "present-window-missing", 88);
   std::string evidence;
@@ -219,6 +248,8 @@ bool PresentFrame(const std::shared_ptr<host::FramePresent>& present) {
     uint32_t w = 0, h = 0;
     const bool capture = n <= PresentCaptures() || present->capture;
     const bool ok = engine.Present(present->slot, capture, bgra, w, h, out);
+    overlay::NotePresent();
+    overlay::RequestFrame();  // The PC overlay's next frame, recorded on the UI thread.
     const uint64_t done = presents_done.fetch_add(1) + 1;
     if (!ok || capture || (Diagnostics() && (done <= 8 || done % 300 == 0)))
       host::Record("native-present-frame", fmt::format(
@@ -228,6 +259,39 @@ bool PresentFrame(const std::shared_ptr<host::FramePresent>& present) {
     return ok;
   });
 }
+// The PC overlay while the game presents nothing: every 33 ms, once the last
+// game present is 250 ms old, a black frame under the overlay.
+namespace {
+std::atomic<bool> idle_running{false};
+std::atomic<bool> idle_in_flight{false};
+std::thread idle_thread;
+}  // namespace
+void StartIdlePresenter() {
+  if (idle_running.exchange(true)) return;
+  idle_thread = std::thread([] {
+    while (idle_running.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(33));
+      if (!host::ActiveDispatcher() || overlay::SinceLastPresent() < std::chrono::milliseconds(250)) continue;
+      overlay::RequestFrame();
+      const auto frame = overlay::Latest();
+      if (!frame || frame->commands.empty() || idle_in_flight.load()) continue;
+      if (!AttachPresentationHost()) continue;
+      auto* dispatcher = host::ActiveDispatcher();
+      idle_in_flight = true;
+      if (!dispatcher || !dispatcher->Post([](Engine& engine, std::string& out) {
+            engine.PresentIdle(out);  // A failed idle present only skips the overlay.
+            idle_in_flight = false;
+            return true;
+          }))
+        idle_in_flight = false;
+    }
+  });
+}
+void StopIdlePresenter() {
+  if (!idle_running.exchange(false)) return;
+  if (idle_thread.joinable()) idle_thread.join();
+}
+
 std::string PresentSummary() {
   return fmt::format("{{\"attached\":{},\"presents_posted\":{},\"presents_done\":{},\"gamma_posts\":{}}}",
                      window_attached.load(), presents_posted.load(), presents_done.load(), gamma_posts.load());
