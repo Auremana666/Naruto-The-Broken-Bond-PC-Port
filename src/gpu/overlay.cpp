@@ -2,8 +2,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <thread>
 
 namespace gpu::overlay {
 namespace {
@@ -14,6 +16,34 @@ std::atomic<bool> pending{false};
 std::mutex rate_mutex;
 std::deque<std::chrono::steady_clock::time_point> presents;
 std::atomic<double> target_aspect{0.0};
+
+// The requests reach the app from this thread, never from the renderer's: the
+// app posts to the UI thread (SDL_PushEvent), which can wait on the UI thread
+// while it closes the window, and the close waits on the renderer.
+std::mutex pump_mutex;
+std::condition_variable pump_wake;
+bool pump_wanted = false, pump_running = false;
+
+void Pump() {
+  for (;;) {
+    std::function<void()> function;
+    {
+      std::unique_lock lock(pump_mutex);
+      pump_wake.wait(lock, [] { return pump_wanted || !pump_running; });
+      if (!pump_running) return;
+      pump_wanted = false;
+    }
+    {
+      std::lock_guard lock(mutex);
+      function = request;
+    }
+    if (function) {
+      function();
+    } else {
+      pending = false;
+    }
+  }
+}
 }  // namespace
 
 void Publish(std::shared_ptr<const Frame> frame) {
@@ -27,9 +57,20 @@ std::shared_ptr<const Frame> Latest() {
 }
 
 void SetFrameRequest(std::function<void()> function) {
-  std::lock_guard lock(mutex);
-  request = std::move(function);
-  pending = false;
+  const bool run = function != nullptr;
+  {
+    std::lock_guard lock(mutex);
+    request = std::move(function);
+    pending = false;
+  }
+  std::lock_guard lock(pump_mutex);
+  if (run && !pump_running) {
+    pump_running = true;
+    std::thread(Pump).detach();  // Never joined: it may wait on the UI thread at exit.
+  } else if (!run) {
+    pump_running = false;
+  }
+  pump_wake.notify_one();
 }
 
 void NotePresent() {
@@ -48,16 +89,11 @@ std::chrono::steady_clock::duration SinceLastPresent() {
 
 void RequestFrame() {
   if (pending.exchange(true)) return;
-  std::function<void()> function;
   {
-    std::lock_guard lock(mutex);
-    function = request;
+    std::lock_guard lock(pump_mutex);
+    pump_wanted = true;
   }
-  if (function) {
-    function();
-  } else {
-    pending = false;
-  }
+  pump_wake.notify_one();
 }
 
 void FrameRecorded() { pending = false; }

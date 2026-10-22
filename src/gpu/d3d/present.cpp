@@ -264,11 +264,12 @@ bool PresentFrame(const std::shared_ptr<host::FramePresent>& present) {
 namespace {
 std::atomic<bool> idle_running{false};
 std::atomic<bool> idle_in_flight{false};
-std::thread idle_thread;
 }  // namespace
 void StartIdlePresenter() {
   if (idle_running.exchange(true)) return;
-  idle_thread = std::thread([] {
+  // Detached: at the window close it may wait on the render thread, which the
+  // close parks; the stop only ends its loop.
+  std::thread([] {
     while (idle_running.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(33));
       if (!host::ActiveDispatcher() || overlay::SinceLastPresent() < std::chrono::milliseconds(250)) continue;
@@ -285,12 +286,9 @@ void StartIdlePresenter() {
           }))
         idle_in_flight = false;
     }
-  });
+  }).detach();
 }
-void StopIdlePresenter() {
-  if (!idle_running.exchange(false)) return;
-  if (idle_thread.joinable()) idle_thread.join();
-}
+void StopIdlePresenter() { idle_running = false; }
 
 std::string PresentSummary() {
   return fmt::format("{{\"attached\":{},\"presents_posted\":{},\"presents_done\":{},\"gamma_posts\":{}}}",

@@ -269,3 +269,41 @@ index b94fe9e..4678465 100644
      // Detached mode: the app brings its own renderer and drives its own paint
      // loop. ReXApp owns the returned drawer via immediate_drawer_.
      immediate_drawer_ = OnCreateImmediateDrawer();
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index aed47f4..cb25c9f 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -464,18 +464,29 @@ void MnkInputDriver::EnqueueKeystroke(uint16_t vk_pad, bool down) {
+ }
+ 
+ void MnkInputDriver::QueueMouseCaptureUpdate(bool should_capture) {
+-  mouse_capture_requested_.store(should_capture, std::memory_order_relaxed);
++  // Only a change wakes the UI thread (this runs at every input poll); a
++  // pending update applies the latest request.
++  if (mouse_capture_requested_.exchange(should_capture, std::memory_order_relaxed) == should_capture) {
++    return;
++  }
+   bool already_queued = false;
+   if (!mouse_capture_update_queued_.compare_exchange_strong(already_queued, true)) {
+     return;
+   }
+-  std::lock_guard lock(state_mutex_);
+-  if (!attached_window_) {
++  rex::ui::Window* window = nullptr;
++  {
++    std::lock_guard lock(state_mutex_);
++    window = attached_window_;
++  }
++  if (!window) {
+     mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+     return;
+   }
+   // Deferred, not CallInUIThread: running inline would re-enter state_mutex_.
+-  attached_window_->app_context().CallInUIThreadDeferred([this] {
++  // Queued outside state_mutex_: the wakeup (SDL_PushEvent) waits for SDL's
++  // event watchers, and the UI thread's window close takes state_mutex_ in one
++  // of them (OnLostFocus); holding it here deadlocked the close.
++  window->app_context().CallInUIThreadDeferred([this] {
+     mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+     ApplyMouseCaptureFromUIThread();
+   });
