@@ -8,8 +8,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 
+#include <fmt/chrono.h>
 #include <imgui.h>
 
 #include <rex/cvar.h>
@@ -145,6 +148,19 @@ class BrokenBondApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+#ifdef BROKENBOND_NATIVE_RENDERER_BOOTSTRAP
+    // record_pipelines: the graphics pipelines this session creates are saved
+    // at exit to pipeline-runs/<time>/pipelines.json next to the executable,
+    // for scripts/update-pipeline-cache.ps1 (no first-time stutter in the next build).
+    if (rex::cvar::GetFlagByName("record_pipelines") == "true" && !std::getenv("REX_NATIVE_FRAME_DIR")) {
+      const auto folder = rex::filesystem::GetExecutableFolder() / "pipeline-runs" /
+                          fmt::format("{:%Y%m%d-%H%M%S}", std::chrono::floor<std::chrono::seconds>(
+                                                               std::chrono::system_clock::now()));
+      std::error_code ec;
+      std::filesystem::create_directories(folder, ec);
+      _wputenv_s(L"REX_NATIVE_FRAME_DIR", folder.wstring().c_str());
+    }
+#endif
     // Input recording and replay for test boots (input_replay.cpp); the SDK's
     // default input system when neither is asked for.
     config.input_factory = CreateInputSystem;
