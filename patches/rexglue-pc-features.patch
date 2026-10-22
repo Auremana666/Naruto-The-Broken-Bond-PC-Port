@@ -1,0 +1,271 @@
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..16843ad 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -1,4 +1,6 @@
+ #pragma once
++
++#include <functional>
+ /**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+@@ -42,6 +44,11 @@ class InputSystem : public system::IInputSystem {
+   /// Replaces any previous assignment. Call before the guest starts polling.
+   void SetDeviceAssignment(std::unique_ptr<DeviceAssignment> assignment);
+ 
++  /// Called with each device's state before it is merged into its guest user's state, so an app
++  /// can remap buttons or add toggle/turbo per device. Call before the guest starts polling.
++  using DeviceStateFilter = std::function<void(const DeviceInfo& device, X_INPUT_STATE& state)>;
++  void SetDeviceStateFilter(DeviceStateFilter filter) { device_state_filter_ = std::move(filter); }
++
+   X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags, X_INPUT_CAPABILITIES* out_caps);
+   X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state);
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+@@ -59,6 +66,7 @@ class InputSystem : public system::IInputSystem {
+   std::vector<std::unique_ptr<InputDriver>> drivers_;
+ 
+   std::unique_ptr<DeviceAssignment> assignment_;
++  DeviceStateFilter device_state_filter_;
+   ActiveDeviceTracker active_devices_;
+ 
+   // Ordered by ordinal. Ordinals are never recycled, so unplugging pad one
+diff --git a/include/rex/logging/api.h b/include/rex/logging/api.h
+index be0497b..ad8ad1d 100644
+--- a/include/rex/logging/api.h
++++ b/include/rex/logging/api.h
+@@ -22,6 +22,7 @@
+ REXCVAR_DECLARE(std::string, log_level);
+ REXCVAR_DECLARE(std::string, log_file);
+ REXCVAR_DECLARE(bool, log_verbose);
++REXCVAR_DECLARE(bool, log_to_file);
+ REXCVAR_DECLARE(bool, log_noisy);
+ REXCVAR_DECLARE(int32_t, log_flush_interval);
+ REXCVAR_DECLARE(int32_t, log_max_file_size_mb);
+@@ -163,6 +164,16 @@ void SetAllLevels(spdlog::level::level_enum level);
+  */
+ void RegisterLogLevelCallback();
+ 
++/**
++ * Whether the automatic log file (logs/<app>_NNN.log) is being written.
++ */
++bool IsFileLogging();
++
++/**
++ * Start writing a new automatic log file, or stop writing it, while running.
++ */
++void SetFileLogging(bool enabled);
++
+ /**
+  * Add a sink to all current and future loggers.
+  *
+diff --git a/include/rex/ui/imgui_drawer.h b/include/rex/ui/imgui_drawer.h
+index a570fa0..00c9630 100644
+--- a/include/rex/ui/imgui_drawer.h
++++ b/include/rex/ui/imgui_drawer.h
+@@ -55,6 +55,8 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
+   // SetPresenter may be called from the destructor.
+   void SetPresenter(Presenter* new_presenter);
+   void SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer);
++  // The drawer that renders ImGui, for creating textures ImGui can draw (ImTextureID).
++  ImmediateDrawer* immediate_drawer() const { return immediate_drawer_; }
+   void SetPresenterAndImmediateDrawer(Presenter* new_presenter,
+                                       ImmediateDrawer* new_immediate_drawer) {
+     SetPresenter(new_presenter);
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index 1645848..3c2368e 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -38,6 +38,8 @@ REXCVAR_DEFINE_STRING(log_level, "info", "Log",
+     .allowed({"trace", "debug", "info", "warn", "error", "critical", "off"});
+ 
+ REXCVAR_DEFINE_STRING(log_file, "", "Log", "Log file path (empty = auto sequential naming)");
++REXCVAR_DEFINE_BOOL(log_to_file, true, "Log",
++                    "Write a log file in logs/ (with log_file empty); can be switched while running");
+ 
+ REXCVAR_DEFINE_BOOL(log_verbose, false, "Log", "Enable verbose logging (sets level to trace)")
+     .debug_only();
+@@ -220,7 +222,7 @@ void InitLogging(const LogConfig& config) {
+   std::string resolved_path;
+   if (config.log_file) {
+     resolved_path = config.log_file;
+-  } else if (!config.app_name.empty()) {
++  } else if (!config.app_name.empty() && REXCVAR_GET(log_to_file)) {
+     auto log_dir = config.log_dir.empty() ? std::filesystem::current_path() / "logs"
+                                           : std::filesystem::path(config.log_dir);
+     resolved_path = NextSequentialLogPath(log_dir, config.app_name).string();
+@@ -414,6 +416,41 @@ void RegisterLogLevelCallback() {
+   });
+ }
+ 
++bool IsFileLogging() {
++  std::lock_guard lock(g_mutex);
++  return g_file_sink != nullptr;
++}
++
++void SetFileLogging(bool enabled) {
++  std::lock_guard lock(g_mutex);
++  if (enabled == (g_file_sink != nullptr))
++    return;
++  if (enabled) {
++    if (g_config.app_name.empty())
++      return;  // only the automatic logs/ file can be switched on later
++    auto log_dir = g_config.log_dir.empty() ? std::filesystem::current_path() / "logs"
++                                            : std::filesystem::path(g_config.log_dir);
++    auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
++        NextSequentialLogPath(log_dir, g_config.app_name).string(),
++        static_cast<size_t>(REXCVAR_GET(log_max_file_size_mb)) * 1024 * 1024,
++        static_cast<size_t>(REXCVAR_GET(log_max_files)), false);
++    sink->set_level(spdlog::level::trace);
++    sink->set_pattern(g_config.file_pattern);
++    g_file_sink = sink;
++    for (auto& entry : g_registry) {
++      if (entry.logger)
++        entry.logger->sinks().push_back(sink);
++    }
++  } else {
++    g_file_sink->flush();
++    for (auto& entry : g_registry) {
++      if (entry.logger)
++        std::erase(entry.logger->sinks(), g_file_sink);
++    }
++    g_file_sink.reset();
++  }
++}
++
+ void AddSink(spdlog::sink_ptr sink) {
+   std::lock_guard lock(g_mutex);
+   g_extra_sinks.push_back(sink);
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..5343493 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -233,6 +233,11 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+     if (driver->GetDeviceState(id, &state) != X_ERROR_SUCCESS) {
+       continue;
+     }
++    if (device_state_filter_) {
++      if (const DeviceInfo* info = DeviceInfoFor(id)) {
++        device_state_filter_(*info, state);
++      }
++    }
+     active_devices_.Observe(user_index, id, state.gamepad);
+     if (!any) {
+       merged = state;
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+index 3f1a852..c584f1b 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -133,6 +133,18 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+     return X_STATUS_OBJECT_NAME_INVALID;
+   }
+ 
++  // ObDosDevices pseudo-handle carries no directory object, so bare relative
++  // paths would reach the VFS without a device prefix and fail with noisy
++  // device-not-found errors. On hardware these resolve against the game
++  // drive; route them to the same mount so they get a clean NO_SUCH_FILE.
++  if (object_attrs->root_directory == 0xFFFFFFFD && !target_path.empty() &&
++      target_path.front() != '\\' && target_path.find(':') == std::string::npos) {
++    if (target_path.back() == '\\') {
++      target_path.pop_back();
++    }
++    target_path = "game:\\" + target_path;
++  }
++
+   if (object_attrs->root_directory != 0xFFFFFFFD &&  // ObDosDevices
+       object_attrs->root_directory != 0) {
+     auto root_file = REX_KERNEL_OBJECTS()->LookupObject<XFile>(object_attrs->root_directory);
+@@ -169,8 +181,22 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+ 
+   *handle_out = handle;
+   if (XFAILED(result)) {
+-    REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
++    auto* thread = XThread::GetCurrentThread();
++    auto* context = thread ? thread->thread_state()->context() : nullptr;
++    REXKRNL_IMPORT_FAIL(
++        "NtCreateFile",
++        "path='{}' root_handle={:#x} root_path='{}' access={:#x} attrs={:#x} "
++        "share={:#x} disposition={:#x} options={:#x} guest_lr={:08X} guest_sp={:08X} -> {:#x}",
++            target_path, uint32_t(object_attrs->root_directory),
++            root_entry ? root_entry->absolute_path() : "<none>", uint32_t(desired_access),
++            uint32_t(file_attributes), uint32_t(share_access), uint32_t(creation_disposition),
++            uint32_t(create_options), context ? uint32_t(context->lr) : 0,
++            context ? context->r1.u32 : 0, result);
+   } else {
++    auto* thread = XThread::GetCurrentThread();
++    auto* context = thread ? thread->thread_state()->context() : nullptr;
++    REXKRNL_IMPORT_TRACE("NtCreateFile", "path='{}' handle={:#x} guest_lr={:08X}",
++                         target_path, handle, context ? uint32_t(context->lr) : 0);
+     REXKRNL_IMPORT_RESULT("NtCreateFile", "{:#x} handle={:#x}", result, handle);
+   }
+   return result;
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..77e8d1a 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
++#include <rex/filesystem/devices/disc_image_device.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/null_device.h>
+ #include <rex/filesystem/vfs.h>
+@@ -304,11 +305,19 @@ bool Runtime::SetupVfs() {
+   }
+ 
+   // Mount game_data_root as \Device\Harddisk0\Partition1
+-  auto mount_path = "\\Device\\Harddisk0\\Partition1";
+-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
+-      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  // (or as the DVD drive \Device\Cdrom0 when it is an Xbox 360 disc image file).
++  const bool is_disc_image = std::filesystem::is_regular_file(abs_game_root);
++  auto mount_path = is_disc_image ? "\\Device\\Cdrom0" : "\\Device\\Harddisk0\\Partition1";
++  std::unique_ptr<rex::filesystem::Device> device;
++  if (is_disc_image) {
++    device = std::make_unique<rex::filesystem::DiscImageDevice>(mount_path, abs_game_root);
++  } else {
++    device = std::make_unique<rex::filesystem::HostPathDevice>(
++        mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++  }
+   if (!device->Initialize()) {
+-    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
++    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize game data device for {}",
++                 abs_game_root.string());
+     return false;
+   }
+   if (!file_system_->RegisterDevice(std::move(device))) {
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b94fe9e..4678465 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -207,7 +207,9 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+     return false;
+   }
+-  if (!std::filesystem::is_directory(paths.game_data_root)) {
++  // game_data_root is either a folder of extracted files or an Xbox 360 disc image (.iso).
++  const bool game_data_is_image = std::filesystem::is_regular_file(paths.game_data_root);
++  if (!game_data_is_image && !std::filesystem::is_directory(paths.game_data_root)) {
+     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
+     REXLOG_ERROR("{}", msg);
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+@@ -263,7 +265,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+   OnLoadXexImage(xex_image);
+ 
+   // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs.
+-  {
++  // (A disc image is checked when it is mounted.)
++  if (!game_data_is_image) {
+     constexpr std::string_view kGameDevice = "game:\\";
+     constexpr std::string_view kDDevice = "d:\\";
+     std::string_view tail = xex_image;
+@@ -370,7 +373,8 @@ bool ReXApp::SetupPresentation() {
+       }
+     }
+     window_->SetPresenter(presenter);
+-  } else if (!graphics_system) {
++  } else if (!graphics_system || !graphics_system->presenter()) {
++    // (Also a graphics system without a presenter: the app renders and presents.)
+     // Detached mode: the app brings its own renderer and drives its own paint
+     // loop. ReXApp owns the returned drawer via immediate_drawer_.
+     immediate_drawer_ = OnCreateImmediateDrawer();

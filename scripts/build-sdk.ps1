@@ -11,7 +11,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $sdkBuild = Join-Path $projectRoot 'build/sdk'
 $sdkInstall = Join-Path $projectRoot 'build/sdk-install'
 $sdkSource = Join-Path $projectRoot 'sdk'
-foreach ($patchName in @('rexglue-enable-usbcam.patch', 'rexglue-discovery.patch', 'rexglue-xma-decoder.patch', 'rexglue-mnk-modifiers.patch')) {
+foreach ($patchName in @('rexglue-enable-usbcam.patch', 'rexglue-discovery.patch', 'rexglue-xma-decoder.patch', 'rexglue-mnk-modifiers.patch', 'rexglue-pc-features.patch')) {
     $sdkPatch = Join-Path $projectRoot "patches/$patchName"
     & git -C $sdkSource apply --check $sdkPatch 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
