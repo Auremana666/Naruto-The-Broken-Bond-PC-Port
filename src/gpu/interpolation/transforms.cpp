@@ -9,6 +9,7 @@
 #include <fmt/format.h>
 #include <rex/hook.h>
 #include <rex/ppc/context.h>
+#include <rex/ppc/func.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -29,6 +30,9 @@ extern "C" void __imp__sub_82764A08(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82BD9108(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82B97DE8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82120A70(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82BEF560(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82BEF718(PPCContext& __restrict, uint8_t*);
+extern "C" void sub_82BAD850(PPCContext& __restrict, uint8_t*);
 float FieldOfViewScale();  // pc/ultrawide.cpp
 
 namespace gpu::interpolation {
@@ -803,6 +807,44 @@ REX_HOOK_RAW(sub_82BD9108) {
   }
   __imp__sub_82BD9108(ctx, base);
   if (widen) gpu::Put32(base, entry + 148, fov_bits);
+}
+// The camera's field of view set by the logic (82BEF560 blends it over time,
+// the gate's zoom-out and the fight cameras; 82BEF718 sets it at once; r3 the
+// entry's index): they write the entry's +148, then the view's +296 and build
+// its projection (82BAD850, then [view + 60]) themselves, without 82BD9108, so
+// the picture lost the PC field of view on those frames and flipped between
+// the two. The view is built again with the scaled value; the entry keeps the
+// logic's own.
+static void WidenSetFieldOfView(PPCContext& ctx, uint8_t* base, uint32_t index) {
+  const float scale = FieldOfViewScale();
+  if (scale == 1.0f) return;
+  const uint32_t world = gpu::Get32(base, 0x833A3464);
+  if (!world || index >= gpu::Get32(base, world + 728)) return;
+  const uint32_t entry = gpu::Get32(base, world + 720) + 172 * index;
+  const uint32_t view = gpu::Get32(base, entry + 144);
+  if (!view || gpu::Get32(base, view + 296) != gpu::Get32(base, entry + 148)) return;  // Not built here.
+  const float fov = gpu::GetFloat(base, entry + 148);
+  if (!std::isfinite(fov) || fov <= 0.0f) return;
+  const PPCContext saved = ctx;
+  gpu::PutFloat(base, view + 296, std::min(fov * scale, 2.8f));
+  ctx.r3.u64 = view + 248;
+  ctx.r4.u64 = view + 284;
+  ctx.r5.u64 = gpu::Get32(base, view + 240);
+  ctx.r6.u64 = gpu::Get32(base, view + 244);
+  sub_82BAD850(ctx, base);
+  ctx.r3.u64 = view + 284;
+  rex::runtime::ResolveIndirectFunction(gpu::Get32(base, view + 60))(ctx, base);
+  ctx = saved;
+}
+REX_HOOK_RAW(sub_82BEF560) {
+  const uint32_t index = ctx.r3.u32;
+  __imp__sub_82BEF560(ctx, base);
+  WidenSetFieldOfView(ctx, base, index);
+}
+REX_HOOK_RAW(sub_82BEF718) {
+  const uint32_t index = ctx.r3.u32;
+  __imp__sub_82BEF718(ctx, base);
+  WidenSetFieldOfView(ctx, base, index);
 }
 REX_HOOK_RAW(sub_82B97DE8) {
   std::vector<gpu::interpolation::Written> pose;
