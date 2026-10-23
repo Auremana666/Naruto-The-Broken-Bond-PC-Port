@@ -1,0 +1,61 @@
+diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
+index 36a47c7..774304f 100644
+--- a/include/rex/input/mnk/mnk_input_driver.h
++++ b/include/rex/input/mnk/mnk_input_driver.h
+@@ -25,6 +25,11 @@ namespace rex::input::mnk {
+ void SetMouseLookActive(bool active);
+ bool IsMouseLookActive();
+ 
++// Direct mouse look: while on, mouse motion no longer moves the right stick;
++// the title takes the motion (pixels since the last take) and turns its camera
++// by it. The mouse is still captured as for mnk_mouse.
++void SetDirectMouseLook(bool on);
++bool TakeMouseLook(float* dx, float* dy);
+ 
+ class MnkInputDriver final : public InputDriver,
+                              public rex::ui::WindowInputListener,
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index d9436ac..210829e 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -187,8 +187,26 @@ uint8_t StandaloneModifiers(const std::string& cvar_val) {
+ }
+ 
+ std::atomic<bool> mouse_look_active{true};
++std::atomic<bool> direct_mouse_look{false};
++std::mutex direct_mutex;
++float direct_dx = 0.0f, direct_dy = 0.0f;
++
+ }  // namespace
+ 
++void SetDirectMouseLook(bool on) {
++  if (direct_mouse_look.exchange(on, std::memory_order_relaxed) == on) return;
++  std::lock_guard lock(direct_mutex);
++  direct_dx = direct_dy = 0.0f;
++}
++
++bool TakeMouseLook(float* dx, float* dy) {
++  std::lock_guard lock(direct_mutex);
++  *dx = direct_dx;
++  *dy = direct_dy;
++  direct_dx = direct_dy = 0.0f;
++  return *dx != 0.0f || *dy != 0.0f;
++}
++
+ void SetMouseLookActive(bool active) {
+   mouse_look_active.store(active, std::memory_order_relaxed);
+ }
+@@ -397,7 +415,12 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+   if (pressed(REXCVAR_GET(keybind_rstick_down)))
+     ry -= INT16_MAX;
+ 
+-  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
++  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive() &&
++      direct_mouse_look.load(std::memory_order_relaxed)) {
++    std::lock_guard lock(direct_mutex);
++    direct_dx += mouse_dx_;
++    direct_dy += mouse_dy_;
++  } else if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+     double sensitivity = REXCVAR_GET(mnk_sensitivity);
+     constexpr double kBaseScale = 200.0;
+     rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);

@@ -34,6 +34,7 @@ set(BROKENBOND_SOURCES
     src/pc/auto_jutsu.cpp
     src/pc/title_screen.cpp
     src/pc/ultrawide.cpp
+    src/pc/mouse_camera.cpp
 )
 
 # The shipping native build uses the Rise renderer adapted to Broken Bond,

@@ -38,6 +38,7 @@ void StopIdlePresenter();
 #include "pc/auto_jutsu.h"
 #include "pc/fps_counter.h"
 #include "pc/input_layout.h"
+#include "pc/mouse_camera.h"
 #include "pc/options_menu.h"
 #include "pc/overlay_drawer.h"
 #include "pc/pad_input.h"
@@ -324,6 +325,7 @@ class BrokenBondApp : public rex::ReXApp {
   void PollControllerShortcut() {
     // Also the per-frame place for the aspect ratio setting (PC Options > Display).
     UpdateUltrawide(runtime() ? runtime()->virtual_membase() : nullptr);
+    UpdateMouseCamera();
     const uint32_t pads = ReadPads();
     const bool held = (pads & kPadBack) && (pads & kPadStart);
     if (held && !shortcut_held_) {
