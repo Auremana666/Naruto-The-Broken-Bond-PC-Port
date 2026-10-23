@@ -80,6 +80,7 @@
 #include <rex/system/xmemory.h>
 #include <functional>
 #include <thread>
+#include "gpu/diagnostics/perf_log.h"
 #include <rex/runtime.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
@@ -332,6 +333,7 @@ REX_HOOK_RAW(sub_821B1DD0) {
   StateAtSwap(ctx, base, ctx.r3.u32, true, ctx.r4.u32);  // Its state and front buffer.
   const bool measuring = MeasureSwaps() > 0;
   if (measuring) MeasureAtSwap(ctx);  // The frame closed by this Swap.
+  else gpu::perf_log::AtSwap();
   gpu::profile::Timer swap_time(gpu::profile::kSwap);
   const uint32_t dev = ctx.r3.u32, front = ctx.r4.u32, params = ctx.r5.u32, lr = ctx.lr;
   if (!front) StopInOrder(ctx, "Swap-front-buffer-null", 88);

@@ -74,7 +74,7 @@ if(BROKENBOND_NATIVE_RENDERER)
          src/gpu/diagnostics/frame_capture.cpp src/gpu/diagnostics/measure.cpp
          src/gpu/diagnostics/present_proof.cpp
          src/gpu/diagnostics/crash_dump.cpp src/gpu/diagnostics/sampler.cpp
-         src/gpu/diagnostics/heap_watch.cpp
+         src/gpu/diagnostics/heap_watch.cpp src/gpu/diagnostics/perf_log.cpp
          # The logic tick at a free frame rate and the transforms between the ticks (state interpolation).
          src/gpu/interpolation/tick.cpp src/gpu/interpolation/transforms.cpp
          # The graphics options, under the SDK names.

@@ -160,6 +160,7 @@ class BrokenBondApp : public rex::ReXApp {
       std::error_code ec;
       std::filesystem::create_directories(folder, ec);
       _wputenv_s(L"REX_NATIVE_FRAME_DIR", folder.wstring().c_str());
+      _wputenv_s(L"REX_NATIVE_PERF_LOG", L"1");  // performance.csv there too (gpu/diagnostics/perf_log.h).
     }
 #endif
     // Input recording and replay for test boots (input_replay.cpp); the SDK's

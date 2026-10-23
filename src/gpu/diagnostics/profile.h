@@ -128,10 +128,10 @@ inline void Add(Slot slot, uint64_t ns) {
   slots[slot].calls.fetch_add(1, std::memory_order_relaxed);
 }
 // The profile runs with the diagnostic instruments (gpu::Diagnostics) and in
-// the measurement mode, which does not need them; off, a timer or a count
-// costs one test.
+// the measurement mode, which does not need them, and for the performance log
+// (perf_log.h); off, a timer or a count costs one test.
 inline bool Profiling() {
-  static const bool value = gpu::Diagnostics() || QuietRecords();
+  static const bool value = gpu::Diagnostics() || QuietRecords() || std::getenv("REX_NATIVE_PERF_LOG");
   return value;
 }
 inline void Count(Counter counter, uint64_t value) {
