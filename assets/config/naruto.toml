@@ -96,8 +96,13 @@ auto_jutsu_pad2_4 = "x"
 
 # PC title screen when the game starts (PC Options > Game).
 show_title_screen = true
-# Log files in logs/ (PC Options > Game, or Ctrl+F12 while playing).
+# Debug (PC Options > Debug)
+# Log files in logs/ (or Ctrl+F12 while playing).
 log_to_file = false
+# Saves the graphics and the performance of each session to pipeline-runs/ (to send in against stutters).
+record_pipelines = false
+# Skips an object for a moment while its graphics are prepared, instead of freezing the game.
+async_shaders = true
 
 # Aspect ratio: 16:9, 21:9, 32:9 or auto (PC Options > Display).
 aspect_ratio = "16:9"
