@@ -34,8 +34,8 @@ struct Settings {
   // Own option: 0.5 keeps the title's gamma ramp.
   float brightness = 0.5f;            // brightness [0, 1]
   // Own option: the sample count of the
-  // targets the title creates with MSAA; 0 keeps the title's (4x here).
-  uint32_t msaa_samples = 0;          // msaa_samples: 0, 2, 4 or 8
+  // targets the title creates with MSAA; 0 keeps the title's (4x here), 1 turns it off.
+  uint32_t msaa_samples = 0;          // msaa_samples: 0, 1, 2, 4 or 8
   // Own option: alpha-tested
   // draws into multisampled targets use alpha to coverage instead.
   bool transparency_antialiasing = false;  // transparency_antialiasing

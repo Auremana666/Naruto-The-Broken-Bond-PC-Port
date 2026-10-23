@@ -16,7 +16,7 @@ namespace gpu {
 inline const char* RenderModeError(const RenderMode& mode) {
   const ResolutionScale& scale = mode.scale;
   if (!(scale.x >= 1.0f && scale.x <= 4.0f && scale.y >= 1.0f && scale.y <= 4.0f)) return "native-resolution-scale";
-  if (mode.msaa_samples && mode.msaa_samples != 2 && mode.msaa_samples != 4 && mode.msaa_samples != 8)
+  if (mode.msaa_samples > 1 && mode.msaa_samples != 2 && mode.msaa_samples != 4 && mode.msaa_samples != 8)
     return "native-msaa-samples";
   return nullptr;
 }

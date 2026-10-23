@@ -40,7 +40,7 @@ REXCVAR_DEFINE_DOUBLE(brightness, 0.5, "broken_bond/Graphics",
 // The sample count of the targets the title creates with
 // MSAA (the 4X pass and its tile backing here); single-sample targets stay so.
 REXCVAR_DEFINE_INT32(msaa_samples, 0, "broken_bond/Graphics",
-                     "MSAA samples of the game's multisampled targets in the native renderer: 0 (the game's), "
+                     "MSAA samples of the game's multisampled targets in the native renderer: 0 (the game's 4x), 1 (off), "
                      "2, 4 or 8, limited to the device")
     .range(0, 8)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -248,7 +248,7 @@ void LoadSettings() {
   s.brightness = std::isfinite(brightness) ? std::clamp(float(brightness), 0.0f, 1.0f) : 0.5f;
   // A value between the allowed ones takes the one below it.
   const int32_t msaa = REXCVAR_GET(msaa_samples);
-  s.msaa_samples = msaa >= 8 ? 8 : msaa >= 4 ? 4 : msaa >= 2 ? 2 : 0;
+  s.msaa_samples = msaa >= 8 ? 8 : msaa >= 4 ? 4 : msaa >= 2 ? 2 : msaa == 1 ? 1 : 0;
   s.transparency_antialiasing = REXCVAR_GET(transparency_antialiasing);
   s.frame_rate = uint32_t(std::clamp(REXCVAR_GET(frame_rate), 30, 240));
   s.graphics_device = REXCVAR_GET(graphics_device);

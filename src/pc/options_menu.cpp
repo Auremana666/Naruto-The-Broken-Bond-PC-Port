@@ -361,8 +361,8 @@ void OptionsMenu::BuildPages() {
                                    {"5120X2880", "4"}},
                                   "Resolution the game is drawn at. Higher is sharper but slower."));
   graphics.items.push_back(choice("ANTI-ALIASING", "msaa_samples",
-                                  {{"OFF", "0"}, {"2X MSAA", "2"}, {"4X MSAA", "4"}, {"8X MSAA", "8"}},
-                                  "Smooths jagged edges. Higher is smoother but slower."));
+                                  {{"OFF", "1"}, {"2X MSAA", "2"}, {"4X MSAA (ORIGINAL)", "0"}, {"8X MSAA", "8"}},
+                                  "Smooths jagged edges. The game uses 4X; OFF is much faster on laptops and built-in graphics."));
   graphics.items.push_back(toggle("TRANSPARENCY ANTI-ALIASING", "transparency_antialiasing",
                                   "Smooths the edges of leaves, hair and fences (needs MSAA)."));
   graphics.items.push_back(choice("EDGE SMOOTHING", "swap_post_effect",
