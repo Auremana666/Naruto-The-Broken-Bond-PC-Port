@@ -293,7 +293,7 @@ void OptionsMenu::BuildPages() {
   root.title = "PC OPTIONS";
   root.items = {submenu("DISPLAY", 1), submenu("GRAPHICS", 2), submenu("CONTROLS", 3),
                 submenu("AUDIO", 5), submenu("GAME", 6), submenu("CHEATS", 9),
-                submenu("SHORTCUT KEYS", 8)};
+                submenu("SHORTCUT KEYS", 8), submenu("DEBUG", 12)};
   {
     Item exit;
     exit.kind = Kind::kAction;
@@ -401,12 +401,6 @@ void OptionsMenu::BuildPages() {
                                    {"8X", "4"},
                                    {"16X", "5"}},
                                   "Keeps textures sharp at an angle (anisotropic filtering)."));
-  graphics.items.push_back(toggle("SKIP UNREADY GRAPHICS", "async_shaders",
-                                  "Fewer stutters on slow graphics chips: an object whose graphics are still being "
-                                  "prepared is skipped for a moment instead of freezing the game."));
-  graphics.items.push_back(toggle("RECORD GRAPHICS LOG", "record_pipelines",
-                                  "Saves the graphics each session uses to pipeline-runs, to send in against "
-                                  "stutters. Applies after a restart."));
 
   // 3: controls
   Page controls;
@@ -504,8 +498,6 @@ void OptionsMenu::BuildPages() {
                               "The Ubisoft video and the logo screens when the game starts."));
   game.items.push_back(toggle("PC TITLE SCREEN", "show_title_screen",
                               "The white PC title screen with Naruto when the game starts."));
-  game.items.push_back(toggle("WRITE LOG FILES", "log_to_file",
-                              "Saves a log in logs/ every time you play (for fixing problems). Ctrl+F12."));
 
   // 7: controller layout, drawn as a controller
   Page pad;
@@ -581,8 +573,20 @@ void OptionsMenu::BuildPages() {
     pads.items.push_back(item);
   }
 
+  // 12: debug (the logs to send in with a problem, and the stutter guard)
+  Page debug;
+  debug.title = "DEBUG";
+  debug.items.push_back(toggle("WRITE LOG FILES", "log_to_file",
+                               "Saves a log in logs/ every time you play (for fixing problems). Ctrl+F12."));
+  debug.items.push_back(toggle("RECORD GRAPHICS LOG", "record_pipelines",
+                               "Saves the graphics and the performance of each session to pipeline-runs, to send "
+                               "in against stutters. Applies after a restart."));
+  debug.items.push_back(toggle("SKIP UNREADY GRAPHICS", "async_shaders",
+                               "Fewer stutters on slow graphics chips: an object whose graphics are still being "
+                               "prepared is skipped for a moment instead of freezing the game."));
+
   pages_ = {root,      display, graphics, controls, keys,  audio,
-            game,      pad,     shortcuts, cheats,  jutsu, pads};
+            game,      pad,     shortcuts, cheats,  jutsu, pads, debug};
 }
 
 void OptionsMenu::JumpTo(int page) {
