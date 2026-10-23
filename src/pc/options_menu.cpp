@@ -401,6 +401,9 @@ void OptionsMenu::BuildPages() {
                                    {"8X", "4"},
                                    {"16X", "5"}},
                                   "Keeps textures sharp at an angle (anisotropic filtering)."));
+  graphics.items.push_back(toggle("RECORD GRAPHICS LOG", "record_pipelines",
+                                  "Saves the graphics each session uses to pipeline-runs, to send in against "
+                                  "stutters. Applies after a restart."));
 
   // 3: controls
   Page controls;
