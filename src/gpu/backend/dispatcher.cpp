@@ -50,6 +50,8 @@ struct Dispatcher::State {
   std::condition_variable stage_wake, stage_space;
   std::deque<std::unique_ptr<StageTask>> stage;
   bool stage_stopped = false;
+  bool translator_waiting = false;           // The translator sleeps on stage_wake.
+  std::atomic<bool> stage_closing{false};    // stage_stopped, read by the translator outside the lock.
   std::thread translator;
   std::atomic<DWORD> translator_id{0};
   std::atomic<bool> discarding{false};
@@ -82,32 +84,48 @@ struct Dispatcher::State {
       translator_id.store(GetCurrentThreadId());
       SetThreadDescription(GetCurrentThread(), L"Native Translation");
       sampler::RegisterThread("translate");
+      // The tasks are taken in batches; the producer wakes this thread only
+      // when it sleeps and a batch is worth it (Enqueue), and the timed wait
+      // bounds what a lone capture waits.
+      std::deque<std::unique_ptr<StageTask>> batch;
       for (;;) {
-        std::unique_ptr<StageTask> task;
         {
           std::unique_lock lock(stage_mutex);
-          stage_wake.wait(lock, [&] { return !stage.empty() || stage_stopped; });
+          while (stage.empty() && !stage_stopped) {
+            translator_waiting = true;
+            stage_wake.wait_for(lock, std::chrono::milliseconds(1));
+            translator_waiting = false;
+          }
           if (stage_stopped) {
             stage_cancelled += stage.size();
             stage.clear();
             stage_space.notify_all();
             return;
           }
-          task = std::move(stage.front());
-          stage.pop_front();
-          stage_space.notify_all();
+          const bool full = stage.size() >= kStageMax;
+          batch.swap(stage);
+          if (full) stage_space.notify_all();
         }
-        if (discarding.load(std::memory_order_acquire) && task->Discardable()) {
-          stage_discarded.fetch_add(1);
-          continue;
+        for (size_t i = 0; i < batch.size(); ++i) {
+          auto& task = batch[i];
+          if (stage_closing.load(std::memory_order_acquire)) {  // StopStage: the rest is cancelled.
+            std::lock_guard lock(stage_mutex);
+            stage_cancelled += batch.size() - i;
+            break;
+          }
+          if (discarding.load(std::memory_order_acquire) && task->Discardable()) {
+            stage_discarded.fetch_add(1);
+            continue;
+          }
+          stage_run.fetch_add(1);
+          try {
+            task->Run();
+          } catch (const TranslationStopped&) {
+            discarding.store(true, std::memory_order_release);
+            stage_stops.fetch_add(1);
+          }
         }
-        stage_run.fetch_add(1);
-        try {
-          task->Run();
-        } catch (const TranslationStopped&) {
-          discarding.store(true, std::memory_order_release);
-          stage_stops.fetch_add(1);
-        }
+        batch.clear();
       }
     });
   }
@@ -115,6 +133,7 @@ struct Dispatcher::State {
     {
       std::lock_guard lock(stage_mutex);
       stage_stopped = true;
+      stage_closing.store(true, std::memory_order_release);
     }
     stage_wake.notify_all();
     stage_space.notify_all();
@@ -340,12 +359,16 @@ bool Dispatcher::Enqueue(std::unique_ptr<StageTask> task) {
     s.stage_space.wait(lock, [&] { return s.stage.size() < kStageMax || s.stage_stopped; });
     if (s.stage_stopped) return false;
   }
+  // A capture wakes a sleeping translator once a few are queued (a wake per
+  // draw cost the title's thread about 3% of its time); any other task (a
+  // round trip, deferred work) wakes it at once.
+  const bool urgent = !task->Discardable();
   s.stage.push_back(std::move(task));
   ++s.stage_enqueued;
   s.stage_max = std::max<uint64_t>(s.stage_max, s.stage.size());
   if (s.stage.size() > s.stage_depth_frame.load(std::memory_order_relaxed))
     s.stage_depth_frame.store(s.stage.size(), std::memory_order_relaxed);
-  s.stage_wake.notify_one();
+  if (s.translator_waiting && (urgent || s.stage.size() >= kStageWakeBatch)) s.stage_wake.notify_one();
   return true;
 }
 void Dispatcher::Defer(std::function<void()> work) {

@@ -95,6 +95,8 @@ class Dispatcher final {
   // pending (the title waits when the translator falls behind). False when the
   // stage is off or closed: the task is dropped. Not for the translator.
   static constexpr size_t kStageMax = 8192;
+  // Captures queued before a sleeping translator is woken (Enqueue).
+  static constexpr size_t kStageWakeBatch = 16;
   bool Enqueue(std::unique_ptr<StageTask> task);
   // Runs work in order with the captures: on the stage when deferred and not
   // already on the translator, inline otherwise.
