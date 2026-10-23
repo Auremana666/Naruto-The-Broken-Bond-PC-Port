@@ -21,6 +21,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 extern "C" void __imp__sub_827F6F38(PPCContext& __restrict, uint8_t*);
@@ -762,12 +763,25 @@ REX_HOOK_RAW(sub_827F6F38) {
   gpu::interpolation::ViewStart(base);
   __imp__sub_827F6F38(ctx, base);
 }
+// The view's entry last built with the PC field of view (82BD9108 below).
+static uint32_t widened_entry = 0;
 REX_HOOK_RAW(sub_82BBADE0) {
   const bool main_step = ctx.lr == gpu::interpolation::kDeliveryReturn;
   __imp__sub_82BBADE0(ctx, base);
   if (!main_step) return;
   gpu::tick::EndView(base);
   gpu::interpolation::Restore(base);
+  // The frame is delivered: the view is built again from the entry as the
+  // logic has it, so the logic of the next tick reads the game's own field of
+  // view in the view (+296 and the projection). Some cameras (the gate's
+  // zoom-out, fight cameras) take their next field of view from the view's:
+  // left widened, it fed back each tick and the picture flipped between two.
+  if (const uint32_t entry = std::exchange(widened_entry, 0)) {
+    const PPCContext saved = ctx;
+    ctx.r3.u64 = entry;
+    __imp__sub_82BD9108(ctx, base);
+    ctx = saved;
+  }
 }
 // The mount of the display's lists: the objects go to the tracks only from
 // the view block's thread (82749990 also calls it); a mount from another
@@ -792,7 +806,8 @@ REX_HOOK_RAW(sub_82BD9108) {
   gpu::interpolation::CameraEntry(base, ctx.r3.u32);
   // PC field of view: the entry's vertical field of view (+148, radians)
   // scaled for this build of the view's projection only, then put back so the
-  // logic keeps its own value.
+  // logic keeps its own value; the view itself is built again unscaled after
+  // the delivery (82BBADE0 above).
   const uint32_t entry = ctx.r3.u32;
   const float scale = FieldOfViewScale();
   const bool widen = entry && scale != 1.0f;
@@ -802,7 +817,10 @@ REX_HOOK_RAW(sub_82BD9108) {
     if (std::isfinite(fov) && fov > 0.0f) gpu::PutFloat(base, entry + 148, std::min(fov * scale, 2.8f));
   }
   __imp__sub_82BD9108(ctx, base);
-  if (widen) gpu::Put32(base, entry + 148, fov_bits);
+  if (widen) {
+    gpu::Put32(base, entry + 148, fov_bits);
+    widened_entry = entry;
+  }
 }
 REX_HOOK_RAW(sub_82B97DE8) {
   std::vector<gpu::interpolation::Written> pose;
