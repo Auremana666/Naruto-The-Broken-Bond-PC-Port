@@ -171,6 +171,13 @@ own copy of the game; see the [recompilation README](docs/recompilation-README.m
 
 The v1 code (the emulated-graphics version) is in the [`v1` branch](../../tree/v1).
 
+## Support me with Ryō (両)
+
+This port is free and always will be. If you enjoy it and want to support more ports and updates,
+you can send a few Ryō my way on Ko-fi. Thank you, believe it!
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/auremana666)
+
 ## Credits
 
 - **Auremana666:** project lead, testing, title screen and trailer.
