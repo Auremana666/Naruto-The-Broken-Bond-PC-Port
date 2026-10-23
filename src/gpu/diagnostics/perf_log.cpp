@@ -25,15 +25,6 @@ std::array<uint64_t, profile::kCounterCount> counter_sums{};
 uint64_t wait_us_max = 0, loading_frames = 0;
 uint64_t process_100ns = 0;  // Process CPU time at the second's start.
 
-// The slots and counters written, in this order.
-constexpr profile::Slot kSlots[] = {
-    profile::kDraw, profile::kTranslate, profile::kEnginePipeline, profile::kEngineTexture,
-    profile::kHookUnlock, profile::kSwapWaitIdle, profile::kFenceWait, profile::kSwapPace};
-constexpr profile::Counter kCounters[] = {
-    profile::kPipelinesWaited, profile::kPipelinesAsync, profile::kPipelineSkippedDraws,
-    profile::kPipelinesCreated, profile::kPipelinesWarm, profile::kPipelinesPrecompiled,
-    profile::kTextureUploads, profile::kUploadBytes, profile::kStageWaits};
-
 uint64_t ProcessCpu100ns() {
   FILETIME created{}, exited{}, kernel{}, user{};
   if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0;
@@ -90,8 +81,9 @@ void WriteHeader() {
     settings += fmt::format(",{},{}", name, rex::cvar::GetFlagByName(name));
   std::fprintf(out, "# settings%s\n", settings.c_str());
   std::string columns = "seconds,frames,avg_ms,worst_ms,over_25ms,over_50ms,over_100ms,loading_frames,cpu_percent";
-  for (const auto slot : kSlots) columns += fmt::format(",{}_ms", profile::kSlotNames[slot]);
-  for (const auto counter : kCounters) columns += fmt::format(",{}", profile::kCounterNames[counter]);
+  for (unsigned slot = 0; slot < profile::kCount; ++slot) columns += fmt::format(",{}_ms", profile::kSlotNames[slot]);
+  for (unsigned counter = 0; counter < profile::kCounterCount; ++counter)
+    if (counter != profile::kPipelineWaitUsMax) columns += fmt::format(",{}", profile::kCounterNames[counter]);
   columns += ",pipeline_wait_us_max";
   std::fprintf(out, "%s\n", columns.c_str());
   std::fflush(out);
@@ -113,8 +105,9 @@ void WriteSecond(uint64_t now) {
       "{:.0f},{},{:.2f},{:.1f},{},{},{},{},{:.0f}", double(second_start - started) / 1e9, intervals.size(),
       intervals.empty() ? 0.0 : double(sum) / intervals.size() / 1e6, double(worst) / 1e6, over25, over50, over100,
       loading_frames, wall_100ns > 0 ? 100.0 * double(cpu - process_100ns) / wall_100ns / cores : 0.0);
-  for (const auto slot : kSlots) line += fmt::format(",{:.1f}", double(slot_ns[slot]) / 1e6);
-  for (const auto counter : kCounters) line += fmt::format(",{}", counter_sums[counter]);
+  for (unsigned slot = 0; slot < profile::kCount; ++slot) line += fmt::format(",{:.1f}", double(slot_ns[slot]) / 1e6);
+  for (unsigned counter = 0; counter < profile::kCounterCount; ++counter)
+    if (counter != profile::kPipelineWaitUsMax) line += fmt::format(",{}", counter_sums[counter]);
   line += fmt::format(",{}", wait_us_max);
   std::fprintf(out, "%s\n", line.c_str());
   std::fflush(out);

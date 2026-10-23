@@ -25,7 +25,7 @@ REXCVAR_DEFINE_BOOL(triple_buffering, false, "broken_bond/Graphics",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // Draws whose pipeline is still being created are left out of their frame
 // instead of waiting for it (gpu/d3d/draw.cpp, BatchedPipelineTake).
-REXCVAR_DEFINE_BOOL(async_shaders, false, "broken_bond/Graphics",
+REXCVAR_DEFINE_BOOL(async_shaders, true, "broken_bond/Graphics",
                     "Skip a draw while its graphics pipeline is created instead of waiting (fewer stutters on "
                     "slow drivers, objects may pop in)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
