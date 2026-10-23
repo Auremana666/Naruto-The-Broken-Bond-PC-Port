@@ -401,6 +401,9 @@ void OptionsMenu::BuildPages() {
                                    {"8X", "4"},
                                    {"16X", "5"}},
                                   "Keeps textures sharp at an angle (anisotropic filtering)."));
+  graphics.items.push_back(toggle("SKIP UNREADY GRAPHICS", "async_shaders",
+                                  "Fewer stutters on slow graphics chips: an object whose graphics are still being "
+                                  "prepared is skipped for a moment instead of freezing the game."));
   graphics.items.push_back(toggle("RECORD GRAPHICS LOG", "record_pipelines",
                                   "Saves the graphics each session uses to pipeline-runs, to send in against "
                                   "stutters. Applies after a restart."));

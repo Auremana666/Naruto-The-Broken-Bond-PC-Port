@@ -357,6 +357,9 @@ DrawRequest::PipelineTake BatchedPipelineTake() {
     const std::string_view option = text ? text : "";
     if (option == "0") return DrawRequest::PipelineTake::kSync;
     if (option == "1" && Diagnostics()) return DrawRequest::PipelineTake::kSkip;
+    // PC Options > Graphics > Skip Unready Graphics (async_shaders): a draw whose pipeline is not ready yet
+    // is left out of its frame instead of waiting (no hitch on slow drivers, a short pop instead).
+    if (rex::cvar::GetFlagByName("async_shaders") == "true") return DrawRequest::PipelineTake::kSkip;
     return DrawRequest::PipelineTake::kPrefetch;
   }();
   return value;

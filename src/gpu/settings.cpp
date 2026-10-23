@@ -23,6 +23,12 @@ REXCVAR_DEFINE_INT32(max_frame_latency, 1, "broken_bond/Graphics",
 REXCVAR_DEFINE_BOOL(triple_buffering, false, "broken_bond/Graphics",
                     "Three swapchain buffers in the native renderer instead of two")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// Draws whose pipeline is still being created are left out of their frame
+// instead of waiting for it (gpu/d3d/draw.cpp, BatchedPipelineTake).
+REXCVAR_DEFINE_BOOL(async_shaders, false, "broken_bond/Graphics",
+                    "Skip a draw while its graphics pipeline is created instead of waiting (fewer stutters on "
+                    "slow drivers, objects may pop in)")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // Brightness: an exponent on the title's gamma ramp.
 REXCVAR_DEFINE_DOUBLE(brightness, 0.5, "broken_bond/Graphics",
                       "Brightness of the native renderer's output (0.5 = the game's own)")
