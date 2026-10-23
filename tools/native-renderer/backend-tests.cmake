@@ -6,6 +6,7 @@
 add_library(native_engine_test_units STATIC src/gpu/backend/engine.cpp
             ${BROKENBOND_NATIVE_VULKAN_SOURCES} src/gpu/backend/failure_channel.cpp
             src/gpu/backend/pipeline_keys.cpp src/gpu/backend/pipeline_set.cpp src/gpu/backend/dispatcher.cpp
+         src/gpu/common/byte_pool.cpp
             src/gpu/shaders/package.cpp src/gpu/shaders/shader_cache_data.cpp)
 target_include_directories(native_engine_test_units PUBLIC src)
 target_link_libraries(native_engine_test_units PUBLIC native_renderer_plume_vulkan

@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include "gpu/common/byte_pool.h"
 #include "gpu/settings.h"
 
 namespace gpu {
@@ -244,6 +245,16 @@ constexpr const char* TopologyName(Topology topology) {
 }
 
 struct DrawRequest {
+  DrawRequest() = default;
+  DrawRequest(const DrawRequest&) = default;
+  DrawRequest(DrawRequest&&) noexcept = default;
+  DrawRequest& operator=(const DrawRequest&) = default;
+  DrawRequest& operator=(DrawRequest&&) noexcept = default;
+  // The constant records' storage goes back to the pool (byte_pool.h).
+  ~DrawRequest() {
+    ReturnBytes(vs_constants_delta);
+    ReturnBytes(ps_constants_delta);
+  }
   ShaderRef vs{"", ShaderStage::kVertex}, ps{"", ShaderStage::kPixel};
   std::vector<DrawTexture> textures;
   VertexElements elements;

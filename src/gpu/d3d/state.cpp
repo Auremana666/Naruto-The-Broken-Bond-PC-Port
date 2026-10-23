@@ -1,5 +1,6 @@
 // State translation of the D3D boundary (state.h).
 #include "gpu/d3d/state.h"
+#include "gpu/common/byte_pool.h"
 #include "gpu/common/guest_memory.h"
 #include <algorithm>
 #include <cmath>
@@ -74,7 +75,9 @@ void TakeConstants(ConstantShadow& s, bool whole, std::vector<uint8_t>& block, s
   // One allocation for the records: 4 bytes and 4 registers of 16 bytes per
   // pending group, the runs' headers at most one per group.
   const unsigned groups = unsigned(__builtin_popcountll(s.pending));
-  if (groups) delta.reserve(size_t(groups) * (4 + 64));
+  if (!groups) return;
+  if (!delta.capacity()) delta = TakeBytes();
+  delta.reserve(size_t(groups) * (4 + 64));
   unsigned g = 0;
   while (g < 64) {
     if (!((s.pending >> (63 - g)) & 1)) { ++g; continue; }

@@ -60,6 +60,7 @@ if(BROKENBOND_NATIVE_RENDERER)
          # The backend: the D3D12 engine, its pipeline set, its dispatcher and the title-thread witness.
          src/gpu/backend/engine.cpp src/gpu/backend/failure_channel.cpp
          src/gpu/backend/pipeline_keys.cpp src/gpu/backend/pipeline_set.cpp src/gpu/backend/dispatcher.cpp
+         src/gpu/common/byte_pool.cpp
          src/gpu/backend/title_witness.cpp
          # The D3D boundary of the native renderer, one unit per responsibility.
          src/gpu/d3d/hooks.cpp src/gpu/d3d/device.cpp src/gpu/d3d/resources.cpp
