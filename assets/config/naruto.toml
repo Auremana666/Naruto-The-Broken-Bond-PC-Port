@@ -13,7 +13,7 @@ video_mode_refresh_rate = 60.0
 frame_rate = 60
 # Internal resolution: 1 = 720p like the Xbox, 1.5 = 1080p, 2 = 1440p, 3 = 4K.
 internal_resolution_scale = 1.5
-# MSAA: 0, 2, 4 or 8.
+# MSAA: 1 = off, 0 = the game's own 4X, 2, 4 or 8.
 msaa_samples = 0
 transparency_antialiasing = false
 swap_post_effect = "fxaa"
