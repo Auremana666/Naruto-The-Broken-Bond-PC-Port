@@ -76,7 +76,7 @@ void WriteHeader() {
                power.SystemStatusFlag ? "on" : "off");
   std::string settings;
   for (const char* name : {"frame_rate", "internal_resolution_scale", "msaa_samples", "transparency_antialiasing",
-                           "swap_post_effect", "present_effect", "anisotropic_override", "vsync", "fullscreen",
+                           "swap_post_effect", "upscaling", "anisotropic_override", "vsync", "fullscreen",
                            "aspect_ratio", "graphics_device"})
     settings += fmt::format(",{},{}", name, rex::cvar::GetFlagByName(name));
   std::fprintf(out, "# settings%s\n", settings.c_str());

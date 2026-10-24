@@ -55,6 +55,7 @@ class Engine final {
   // 10-bit value << 6). Used by every later Present until replaced.
   bool SetGammaRamp(const std::array<uint16_t, 768>& words, std::string& evidence);
   bool SetVsync(bool enabled, std::string& evidence);
+  bool SetPresentMode(const PresentMode& mode, std::string& evidence);
   // Copies the RGBA8 image of key (an own texture with defined content, or a
   // single-sample color surface) into a stage slot, in the open batch. A front
   // buffer with undefined content is refused. The slot must have been

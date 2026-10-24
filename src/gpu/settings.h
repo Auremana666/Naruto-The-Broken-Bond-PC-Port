@@ -55,6 +55,9 @@ void RegisterPluginOptions();
 // loaded the configuration by then); CurrentSettings returns those values.
 void LoadSettings();
 const Settings& CurrentSettings();
+// Reads again the options the output applies on the fly (VSync, brightness,
+// upscaling and FXAA) after PC Options changed one; the rest stays as loaded.
+void ReloadPresentSettings();
 // The options in use, with where each value came from, as journal fields.
 std::string SettingsEvidence();
 }  // namespace gpu

@@ -7,6 +7,7 @@
 #include "gpu/d3d/d3d.h"
 #include "gpu/common/guest_memory.h"
 #include "gpu/settings.h"
+#include "gpu/d3d/present.h"
 #include "gpu/diagnostics/crash_dump.h"
 #include "gpu/diagnostics/heap_watch.h"
 #include <cstdlib>
@@ -62,6 +63,7 @@ void Configure(rex::RuntimeConfig& config) {
   // The graphics options, read once before the graphics system exists.
   gpu::RegisterPluginOptions();
   gpu::LoadSettings();
+  gpu::RegisterLivePresentOptions();
   const auto& backend = gpu::CurrentSettings().native_backend;
   bool available = false;
 #if !defined(BROKENBOND_NATIVE_D3D12_DISABLED)

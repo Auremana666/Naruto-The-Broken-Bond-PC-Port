@@ -35,6 +35,10 @@ void StartIdlePresenter();
 void StopIdlePresenter();
 // The ramp of the title when SetGammaRamp marked it pending (bit 1 of +16708).
 void PostGammaRamp(PPCContext& ctx, uint8_t* base, uint32_t dev);
+// The output options PC Options may change while the game runs (VSync,
+// brightness, upscaling, FXAA): registered once, applied at the next Present.
+void RegisterLivePresentOptions();
+void ApplyPresentSettings();
 // The copy of the front buffer for this Swap's flip, in the frame lot.
 std::shared_ptr<host::FramePresent> PostStageFront(PPCContext& ctx, uint32_t front, uint64_t swap,
                                                                bool capture);

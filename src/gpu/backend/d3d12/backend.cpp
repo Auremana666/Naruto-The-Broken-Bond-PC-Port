@@ -156,6 +156,7 @@ class Backend final : public gpu::Backend {
   bool DetachWindow(std::string& evidence) override;
   bool SetGammaRamp(const std::array<uint16_t, 768>& words, std::string& evidence) override;
   bool SetVsync(bool enabled, std::string& evidence) override;
+  bool SetPresentMode(const PresentMode& mode, std::string& evidence) override;
   bool StageFront(uint32_t key, uint32_t& slot, std::string& evidence) override;
   bool PresentIdle(std::string& evidence) override;
   bool Present(uint32_t slot, bool capture, std::vector<uint8_t>& bgra, uint32_t& width, uint32_t& height,
@@ -492,6 +493,13 @@ struct Backend::State {
   PresentMode mode;  // Brightness and output effects of the attach.
   // Each 10-bit ramp value with the brightness exponent; used when it is not 0.5.
   std::array<uint16_t, 1024> brightness_ramp{};
+  // The brightness exponent, 1 / (1 + (brightness - 0.5) * 1.2), on the ramp.
+  void SetBrightness(float value) {
+    brightness = std::fabs(value - 0.5f) > 0.001f;
+    const double exponent = 1.0 / std::clamp(1.0 + (double(value) - 0.5) * 1.2, 0.1, 4.0);
+    for (uint32_t i = 0; i < 1024; ++i)
+      brightness_ramp[i] = uint16_t(std::lround(1023.0 * std::pow(i / 1023.0, exponent)));
+  }
   bool brightness = false;
   uint64_t staged_frames = 0, presents = 0, presents_skipped_empty = 0, resizes = 0, gamma_updates = 0;
   uint64_t latency_waits = 0, latency_timeouts = 0, captures = 0;
@@ -1554,11 +1562,7 @@ bool Backend::AttachWindow(void* window, std::string& evidence, const PresentMod
   state_->swap_buffers = mode.buffers;
   state_->max_frame_latency = mode.max_frame_latency;
   state_->mode = mode;
-  // The brightness exponent, 1 / (1 + (brightness - 0.5) * 1.2), on the ramp.
-  state_->brightness = std::fabs(mode.brightness - 0.5f) > 0.001f;
-  const double exponent = 1.0 / std::clamp(1.0 + (double(mode.brightness) - 0.5) * 1.2, 0.1, 4.0);
-  for (uint32_t i = 0; i < 1024; ++i)
-    state_->brightness_ramp[i] = uint16_t(std::lround(1023.0 * std::pow(i / 1023.0, exponent)));
+  state_->SetBrightness(mode.brightness);
   auto* device = static_cast<plume::D3D12Device*>(state_->device.get());
   HRESULT hr = S_OK;
   if (!state_->present_root) {
@@ -1686,6 +1690,25 @@ bool Backend::SetGammaRamp(const std::array<uint16_t, 768>& words, std::string& 
                          state_->gamma_updates, state_->gamma[0], state_->gamma[128], state_->gamma[255],
                          state_->gamma[256], state_->gamma[384], state_->gamma[511], state_->gamma[512],
                          state_->gamma[640], state_->gamma[767]);
+  return true;
+}
+
+// PC Options changed an output option while the game runs: the next Present
+// uses it (Present creates the effect targets the new effects need).
+bool Backend::SetPresentMode(const PresentMode& mode, std::string& evidence) {
+  if (!state_->ready || state_->owner_thread != GetCurrentThreadId()) {
+    evidence = "{\"present_mode\":false,\"reason\":\"native-present-mode-owner\"}";
+    return false;
+  }
+  const uint32_t buffers = state_->mode.buffers, latency = state_->mode.max_frame_latency;
+  state_->mode = mode;
+  state_->mode.buffers = buffers;
+  state_->mode.max_frame_latency = latency;
+  state_->vsync = mode.vsync;
+  if (state_->swapchain) state_->swapchain->setVsyncEnabled(mode.vsync);
+  state_->SetBrightness(mode.brightness);
+  evidence = fmt::format("{{\"present_mode\":true,\"vsync\":{},\"brightness\":{},\"effect\":{},\"post_effect\":{}}}",
+                         mode.vsync, mode.brightness, uint32_t(mode.effect), uint32_t(mode.post_effect));
   return true;
 }
 

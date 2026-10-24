@@ -75,6 +75,13 @@ REXCVAR_DEFINE_STRING(native_backend, "d3d12", "broken_bond/Graphics", "Native r
     .allowed({"d3d12", "vulkan"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+// The output upscaler. The SDK's present_effect offers CAS and FSR only when
+// rexruntime.dll is built with FidelityFX; the native renderer has its own.
+REXCVAR_DEFINE_STRING(upscaling, "bilinear", "broken_bond/Graphics",
+                      "Upscaling of the native renderer's output: bilinear, cas or fsr")
+    .allowed({"bilinear", "cas", "fsr"})
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace gpu {
 namespace {
 Settings settings;
@@ -148,7 +155,7 @@ constexpr std::string_view kOptions[] = {
     "vsync", "anisotropic_override", "swap_post_effect", "resolution_scale", "draw_resolution_scale_x",
     "draw_resolution_scale_y", "max_frame_latency", "triple_buffering", "brightness", "internal_resolution_scale",
     "msaa_samples", "transparency_antialiasing", "frame_rate", "graphics_device", "native_backend",
-    "d3d12_allow_variable_refresh_rate_and_tearing", "present_effect", "present_cas_additional_sharpness",
+    "d3d12_allow_variable_refresh_rate_and_tearing", "upscaling", "present_cas_additional_sharpness",
     "present_fsr_sharpness_reduction", "present_fsr_max_upsampling_passes"};
 
 const char* SourceName(std::string_view name) {
@@ -256,8 +263,7 @@ void LoadSettings() {
   if (rex::cvar::GetFlagInfo("d3d12_allow_variable_refresh_rate_and_tearing"))
     s.allow_tearing = rex::cvar::Query<bool>("d3d12_allow_variable_refresh_rate_and_tearing");
   // fsr2 and fsr3 are the SDK's temporal upscalers, not covered: they keep bilinear.
-  const std::string requested =
-      rex::cvar::GetFlagInfo("present_effect") ? Lower(rex::cvar::Query<std::string>("present_effect")) : "bilinear";
+  const std::string requested = Lower(REXCVAR_GET(upscaling));
   s.present_effect = requested == "cas" ? PresentEffect::kCas
       : requested == "fsr" ? PresentEffect::kFsr : PresentEffect::kBilinear;
   s.cas_additional_sharpness = PresenterFloat("present_cas_additional_sharpness", 0.0f, 0.0f, 1.0f);
@@ -278,6 +284,21 @@ void LoadSettings() {
       s.cas_additional_sharpness, s.fsr_sharpness_reduction, Name(s.swap_post_effect), s.resolution_scale.x,
       s.resolution_scale.y, s.max_frame_latency, s.triple_buffering, s.brightness, s.fsr_max_passes, s.msaa_samples,
       s.transparency_antialiasing, s.frame_rate, Quoted(s.graphics_device), sources);
+}
+void ReloadPresentSettings() {
+  Settings& s = settings;
+  s.vsync = plugin.vsync;
+  const std::string swap_effect = Lower(plugin.swap_post_effect);
+  s.swap_post_effect = swap_effect == "fxaa" ? SwapPostEffect::kFxaa
+      : swap_effect == "fxaa_extreme" ? SwapPostEffect::kFxaaExtreme : SwapPostEffect::kNone;
+  const double brightness = REXCVAR_GET(brightness);
+  s.brightness = std::isfinite(brightness) ? std::clamp(float(brightness), 0.0f, 1.0f) : 0.5f;
+  const std::string requested = Lower(REXCVAR_GET(upscaling));
+  s.present_effect = requested == "cas" ? PresentEffect::kCas
+      : requested == "fsr" ? PresentEffect::kFsr : PresentEffect::kBilinear;
+  s.cas_additional_sharpness = PresenterFloat("present_cas_additional_sharpness", 0.0f, 0.0f, 1.0f);
+  s.fsr_sharpness_reduction = PresenterFloat("present_fsr_sharpness_reduction", 0.2f, 0.0f, 2.0f);
+  s.fsr_max_passes = uint32_t(PresenterFloat("present_fsr_max_upsampling_passes", 4.0f, 1.0f, 4.0f));
 }
 const Settings& CurrentSettings() { return settings; }
 std::string SettingsEvidence() { return evidence; }

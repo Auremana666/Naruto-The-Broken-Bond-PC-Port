@@ -167,6 +167,10 @@ std::string KeysText(const std::string& keys) {
 }
 
 bool RequiresRestart(const std::string& name) {
+  // The native renderer applies these to its output right away (gpu::ApplyPresentSettings).
+  if (name == "vsync" || name == "brightness" || name == "upscaling" || name == "swap_post_effect") {
+    return false;
+  }
   for (const auto& entry : rex::cvar::GetRegistry()) {
     if (entry.name == name) {
       return entry.lifecycle != rex::cvar::Lifecycle::kHotReload;
@@ -368,7 +372,7 @@ void OptionsMenu::BuildPages() {
   graphics.items.push_back(choice("EDGE SMOOTHING", "swap_post_effect",
                                   {{"OFF", "none"}, {"FXAA", "fxaa"}, {"FXAA EXTREME", "fxaa_extreme"}},
                                   "A light, fast smoothing pass on the final picture."));
-  graphics.items.push_back(choice("UPSCALING", "present_effect",
+  graphics.items.push_back(choice("UPSCALING", "upscaling",
                                   {{"BILINEAR", "bilinear"}, {"AMD CAS", "cas"}, {"AMD FSR", "fsr"}},
                                   "How the picture is stretched to your screen. CAS and FSR are sharper."));
   {

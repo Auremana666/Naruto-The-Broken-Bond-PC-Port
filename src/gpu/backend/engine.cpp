@@ -112,6 +112,9 @@ bool Engine::SetGammaRamp(const std::array<uint16_t, 768>& words, std::string& e
   if (Refused(evidence)) return false;
   return backend_ ? backend_->SetGammaRamp(words, evidence) : NoBackend(evidence);
 }
+bool Engine::SetPresentMode(const PresentMode& mode, std::string& evidence) {
+  return backend_ ? backend_->SetPresentMode(mode, evidence) : NoBackend(evidence);
+}
 bool Engine::SetVsync(bool enabled, std::string& evidence) {
   return backend_ ? backend_->SetVsync(enabled, evidence) : NoBackend(evidence);
 }

@@ -234,6 +234,30 @@ std::shared_ptr<host::FramePresent> PostStageFront(PPCContext& ctx, uint32_t fro
   }
   return present;
 }
+
+// PC Options changed VSync, brightness, upscaling or FXAA: the engine takes the
+// new output mode for its next Present instead of waiting for a restart.
+void ApplyPresentSettings() {
+  ReloadPresentSettings();
+  std::lock_guard lock(attach_mutex);
+  auto* dispatcher = host::ActiveDispatcher();
+  if (!window_attached.load() || !dispatcher) return;  // The attach reads the new values.
+  const auto& settings = CurrentSettings();
+  PresentMode mode{settings.vsync, settings.allow_tearing, settings.triple_buffering ? 3u : 2u,
+                   settings.max_frame_latency};
+  mode.brightness = settings.brightness;
+  mode.effect = settings.present_effect;
+  mode.post_effect = settings.swap_post_effect;
+  mode.cas_sharpness = settings.cas_additional_sharpness;
+  mode.fsr_sharpness_reduction = settings.fsr_sharpness_reduction;
+  mode.fsr_passes = settings.fsr_max_passes;
+  dispatcher->Post([mode](Engine& engine, std::string& out) { return engine.SetPresentMode(mode, out); });
+}
+
+void RegisterLivePresentOptions() {
+  for (const char* name : {"vsync", "brightness", "upscaling", "swap_post_effect"})
+    rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) { ApplyPresentSettings(); });
+}
 }  // namespace gpu
 
 namespace gpu {
