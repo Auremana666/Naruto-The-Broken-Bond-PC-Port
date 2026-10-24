@@ -548,7 +548,7 @@ void OptionsMenu::BuildPages() {
                                  {"OVERCAST", "overcast"},
                                  {"EVENING", "evening"},
                                  {"SUNSET", "sunset"}},
-                                "One weather everywhere, fights included. Shows the next time you load a save or a fight."));
+                                "One weather everywhere, fights included. Changes right away. GAME brings back the normal one."));
   {
     Item auto_jutsu = submenu("AUTO JUTSU", 10);
     auto_jutsu.help = "One button does your character's jutsu, on the keyboard and controllers.";
