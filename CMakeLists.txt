@@ -31,6 +31,7 @@ set(BROKENBOND_SOURCES
     src/pc/player_assignment.cpp
     src/pc/input_layout.cpp
     src/pc/unlock_all.cpp
+    src/pc/weather.cpp
     src/pc/auto_jutsu.cpp
     src/pc/title_screen.cpp
     src/pc/ultrawide.cpp

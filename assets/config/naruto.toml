@@ -76,6 +76,7 @@ bind_fps_counter = "F2"
 # Cheats (PC Options > Cheats). Fight Mode unlocks: Your save is not changed.
 unlock_all_characters = false
 unlock_all_arenas = false
+weather = "game"
 
 # Auto Jutsu (PC Options > Cheats > Auto Jutsu): one button performs the fighter's jutsu 1-4, in
 # the order its jutsu menu shows them. Hold to charge, let go to release. Keyboard:

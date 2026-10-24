@@ -540,6 +540,15 @@ void OptionsMenu::BuildPages() {
                                 "Every character in Fight Mode. Your save is not changed."));
   cheats.items.push_back(toggle("UNLOCK ALL ARENAS", "unlock_all_arenas",
                                 "Every arena in Fight Mode. Your save is not changed."));
+  cheats.items.push_back(choice("WEATHER", "weather",
+                                {{"GAME", "game"},
+                                 {"DAY", "day"},
+                                 {"NIGHT", "night"},
+                                 {"MORNING", "morning"},
+                                 {"OVERCAST", "overcast"},
+                                 {"EVENING", "evening"},
+                                 {"SUNSET", "sunset"}},
+                                "One weather everywhere, fights included. Shows the next time you load a save or a fight."));
   {
     Item auto_jutsu = submenu("AUTO JUTSU", 10);
     auto_jutsu.help = "One button does your character's jutsu, on the keyboard and controllers.";
