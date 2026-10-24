@@ -6,17 +6,17 @@
 // lights and effects from it when it loads. The game sets it two ways, both through
 // sub_827C0980: scripts call sub_82806990(12, value), and loading a save restores all conditions
 // with sub_827BD4A0. Both are overridden here, so the next area load uses the chosen weather.
-// A choice made while walking around applies right away: UpdateWeather does what that debug page
-// does after a change, sub_82966FC8(object, atmosphere) and a reload request on the player's
-// data (+3256 = 1, +1712 = 2, the atmosphere changed).
+// A choice applies right away, in menus and in play: once per frame UpdateWeather does what that
+// debug page does after a change, sub_82966FC8(object, atmosphere) and a reload request on the
+// player's data (+3256 = 1, +1712 = 2, the atmosphere changed). Each launch starts with GAME.
 
 #include <cstdint>
 #include <string>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/logging.h>
 
-#include "weather.h"
 
 #include "generated/default/broken_bond_init.h"
 
@@ -27,6 +27,7 @@ extern "C" void __imp__sub_82806990(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_827BD4A0(PPCContext& __restrict, uint8_t*);
 extern "C" void sub_827C0980(PPCContext& __restrict, uint8_t*);
 extern "C" void sub_82966FC8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_827A3E68(PPCContext& __restrict, uint8_t*);
 
 namespace {
 constexpr uint32_t kAtmosphereCondition = 12;
@@ -96,26 +97,45 @@ REX_HOOK_RAW(sub_827BD4A0) {
   ctx.r5.u64 = r5;
 }
 
-void UpdateWeather(PPCContext& ctx, uint8_t* base) {
+static void UpdateWeather(PPCContext& ctx, uint8_t* base) {
+  if (g_applied == -2) {
+    // Every launch starts with the game's own weather; a choice lasts until the game closes.
+    rex::cvar::SetFlagByName("weather", "game");
+    g_applied = -1;
+  }
   const int forced = ForcedAtmosphere();
-  if (g_applied == -2) g_applied = forced;  // the choice the area was loaded with
   if (forced == g_applied) return;
   g_applied = forced;
   const int wanted = forced >= 0 ? forced : g_game_atmosphere;
+  const uint32_t globals = Load32(base, kWorldGlobals);
+  if (wanted < 0 || !globals || wanted == CurrentAtmosphere(base)) return;
   const uint32_t object = Load32(base, kWorldObject);
-  if (wanted < 0 || !object || wanted == CurrentAtmosphere(base)) return;
-  const uint32_t a = Load32(base, object + 32);
+  const uint32_t a = object ? Load32(base, object + 32) : 0;
   const uint32_t b = a ? Load32(base, a + 4) : 0;
   const uint32_t data = b ? Load32(base, b + 48) : 0;
-  if (!data) return;
 
   const PPCContext saved = ctx;
-  ctx.r3.u64 = object;
-  ctx.r4.u64 = static_cast<uint64_t>(wanted);
   g_applying = true;
-  sub_82966FC8(ctx, base);
+  if (object) {
+    ctx.r3.u64 = object;
+    ctx.r4.u64 = static_cast<uint64_t>(wanted);
+    sub_82966FC8(ctx, base);
+  } else {
+    ctx.r3.u64 = Load32(base, globals + 76);
+    ctx.r4.u64 = kAtmosphereCondition;
+    ctx.r5.u64 = static_cast<uint64_t>(wanted);
+    sub_827C0980(ctx, base);
+  }
   g_applying = false;
   ctx = saved;
+  REXLOG_INFO("[weather] atmosphere {}", wanted);
+  if (!data) return;
   Store32(base, data + kReloadRequest, 1);
   Store32(base, data + kReloadReason, kReasonAtmosphere);
+}
+
+// sub_827A3E68 runs once per frame right after the world scripts (sub_827F73F0), in menus and in play.
+REX_HOOK_RAW(sub_827A3E68) {
+  UpdateWeather(ctx, base);
+  __imp__sub_827A3E68(ctx, base);
 }

@@ -17,7 +17,6 @@
 // elsewhere goes back to moving the right stick.
 
 #include "mouse_camera.h"
-#include "weather.h"
 
 #include <algorithm>
 #include <atomic>
@@ -118,7 +117,6 @@ REX_HOOK_RAW(sub_828793B0) {
 }
 
 REX_HOOK_RAW(sub_828C54E8) {
-  UpdateWeather(ctx, base);
   // The player's data: [[[r3 + 32] + 4] + 48], as the function finds it.
   const uint32_t object = ctx.r3.u32;
   const uint32_t a = object ? gpu::Get32(base, object + 32) : 0;
