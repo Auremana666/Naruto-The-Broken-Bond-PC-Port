@@ -4,9 +4,10 @@ An unofficial PC port of **Naruto: The Broken Bond** (Xbox 360, 2008), made by s
 recompiling the original game with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and
 adding a full PC options menu on top.
 
-**Version 2** runs on a **native Direct3D 12 renderer** (from
-[jorjbarbosa's Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp)) instead of
-the emulated Xbox graphics of v1: higher frame rates, sharper resolutions and smoother play.
+**Version 2** is built on [jorjbarbosa's Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp):
+its recompilation, audio fixes and **native Direct3D 12 renderer** (higher frame rates, sharper
+resolutions, smoother play) are his work. This port adds its own PC features on top (see
+[Who made what](#who-made-what)).
 
 **[▶ Watch the trailer](https://youtu.be/j7WtfO7-Km8)**
 
@@ -36,12 +37,19 @@ The first start can take a moment while Windows scans the new program.
 
 ![Gameplay](docs/images/gameplay-16-9.jpg)
 
+From [jorjbarbosa's Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp):
+
 - **Native Direct3D 12 renderer.** The game's graphics run straight on Direct3D 12 instead of an
   emulated Xbox GPU, with the shaders translated ahead of time.
 - **Frame rate up to 240 FPS.** The game still thinks at its own 30 steps per second; above 30 the
   frames in between are drawn smoothly (camera, characters, effects).
-- **Render resolution from 720p up to 5K**, real **anti-aliasing OFF / 2X / 4X / 8X**,
-  transparency anti-aliasing, FXAA, AMD CAS / FSR upscaling, brightness.
+- **Render resolution from 720p up to 5K**, anti-aliasing 2X / 4X / 8X, transparency
+  anti-aliasing, FXAA, AMD CAS / FSR upscaling, brightness.
+
+Added in this port:
+
+- **PC Options menu on the native renderer:** the whole v1 menu, drawn over his renderer, with
+  every graphics option above in it.
 - **Field of view** (PC Options > Display, 90% to 140%), applied right away. The camera zooms the
   game does on its own (the gate in the village, fight cameras) now keep your field of view too.
 
@@ -52,9 +60,11 @@ The first start can take a moment while Windows scans the new program.
   ![21:9 on a 16:9 screen](docs/images/ultrawide-21-9.jpg)
 - **Mouse camera:** the camera turns by how far you move the mouse, like a PC game
   (PC Options > Controls > Mouse Moves Camera).
-- **Fewer stutters:** the graphics the game needs are prepared in advance (a cache built from many
-  play sessions), and **Skip Unready Graphics** skips an object for a moment instead of freezing
-  the game when something new still has to be prepared.
+- **Fewer stutters:** the graphics cache (his system) grew with many more of our play sessions,
+  and **Skip Unready Graphics** turns on his renderer's skip mode as an option, so an object is
+  left out for a moment instead of freezing the game when it still has to be prepared.
+- **Anti-aliasing OFF that is really off** (it used to fall back to the game's own 4X), and less
+  work per frame on the render thread (see [Performance](#performance)).
 - **New Debug page** (PC Options > Debug): log files, a graphics and performance log to send in
   with a problem, and Skip Unready Graphics.
 
@@ -178,14 +188,26 @@ you can send a few Ryō my way on Ko-fi. Thank you, believe it!
 
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/auremana666)
 
+## Who made what
+
+| Part | Made by |
+|---|---|
+| Recompilation setup, function discovery, XMA audio fixes, build scripts (v2) | jorjbarbosa ([broken-bond-recomp](https://github.com/jorjbarbosa/broken-bond-recomp)) |
+| Native Direct3D 12 renderer: draws, shaders, textures, frame interpolation, frame rate, resolution, MSAA, FXAA, CAS / FSR, graphics cache | jorjbarbosa (first written for [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp)) |
+| PC Options menu, key and controller remapping (toggle / turbo), keyboard as player 1 or 2, Auto Jutsu, unlocks, intro skip, PC title screen, Save Backup Tool | this port (first made for v1, moved to v2) |
+| Field of view, ultrawide that widens the view, mouse camera | this port |
+| Menu overlay on the native renderer, Skip Unready Graphics option, Anti-aliasing OFF fix, render-thread speedups, performance log, window close fixes | this port, changes inside his renderer |
+| v1 recompilation and its emulated graphics | this port, on the ReXGlue SDK with patches from naruto-rise-recomp |
+
 ## Credits
 
 - **Auremana666:** project lead, testing, title screen and trailer.
-- **Claude AI (Anthropic):** recompilation, engine fixes and all PC features.
+- **Claude AI (Anthropic):** the code of this port's PC features and the v1 recompilation.
 - [jorjbarbosa](https://github.com/jorjbarbosa): the
-  [Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp) and its native
-  renderer, which v2 is built on, and [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp),
-  which this port started from.
+  [Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp), whose recompilation,
+  audio fixes and native renderer are the base of v2, and
+  [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp), whose SDK patches v1
+  started from. Thank you!
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) (BSD-3-Clause), built on
   [Xenia](https://github.com/xenia-project/xenia).
 - [Titan One](https://fonts.google.com/specimen/Titan+One) font (SIL Open Font License, see `assets/fonts/TitanOne-OFL.txt`) and
