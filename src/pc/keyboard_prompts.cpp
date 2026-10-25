@@ -18,6 +18,7 @@
 #include <bit>
 #include <chrono>
 #include <cstdint>
+#include <cctype>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -34,6 +35,7 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/broken_bond_init.h"
+#include "icon_library.h"
 #include "keyboard_prompts_core.h"
 #include "pad_input.h"
 
@@ -46,6 +48,9 @@ REXCVAR_DEFINE_BOOL(log_button_prompts, false, "Controls",
                     "Log the text lines the keyboard prompts rewrite (diagnostics)");
 
 extern "C" void __imp__sub_8275D500(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8274C3F0(PPCContext& __restrict, uint8_t*);  // interface file opener
+extern "C" void __imp__sub_82120040(PPCContext& __restrict, uint8_t*);  // game malloc(size, 0)
+extern "C" void __imp__sub_82120A70(PPCContext& __restrict, uint8_t*);  // game free(ptr)
 
 namespace {
 
@@ -256,4 +261,91 @@ REX_HOOK_RAW(sub_8275D500) {
   }
   Collect(unit);
   StartWatcher();
+}
+
+// Button icons. The interface movies import their button icons from one library,
+// _ExternalGenericIcons.gfx, which the game's file opener (sub_8274C3F0) loads whole into a memory
+// file: buffer at +0x210, size at +0x214, read position at +0x218 (its Read copies from there and
+// its Close frees the buffer). With keyboard prompts on, the buffer is swapped for a rewritten
+// library where each still button icon is a keycap with the bound key. The library is loaded once
+// when the game starts, so the icons follow the bindings and the option as they were then.
+namespace {
+
+constexpr uint32_t kFileBuffer = 0x210, kFileSize = 0x214, kFilePosition = 0x218;
+constexpr int kLabelFontResource = 105;  // Titan One, the PC Options menu font
+
+bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
+  if (text.size() < suffix.size()) return false;
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(text[text.size() - suffix.size() + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
+  g_base = base;
+  const uint32_t data = Load32(file + kFileBuffer);
+  const uint32_t size = Load32(file + kFileSize);
+  if (!ValidGuest(data) || size < 8 || size > (16u << 20)) {
+    REXLOG_WARN("[prompts] icon library: unexpected file buffer {:08X} ({} bytes)", data, size);
+    return;
+  }
+  const void* font = nullptr;
+  size_t font_size = 0;
+  if (!ReadResource(kLabelFontResource, &font, &font_size)) {
+    REXLOG_WARN("[prompts] icon library: the label font is missing");
+    return;
+  }
+  const bool mouse = MouseLook();
+  const icon_library::Result result = icon_library::RewriteIconLibrary(
+      g_base + data, size,
+      [mouse](std::string_view icon) { return keyboard_prompts::IconLabel(icon, Keybind, mouse); },
+      static_cast<const uint8_t*>(font), font_size);
+  if (result.movie.empty()) {
+    REXLOG_WARN("[prompts] icon library kept as it is: {}", result.error);
+    return;
+  }
+  // The new buffer comes from the game's own allocator, so the file's Close frees it as usual.
+  const PPCContext saved = ctx;
+  ctx.r3.u64 = result.movie.size();
+  ctx.r4.u64 = 0;
+  __imp__sub_82120040(ctx, base);
+  const uint32_t copy = ctx.r3.u32;
+  ctx = saved;
+  if (!ValidGuest(copy)) {
+    REXLOG_WARN("[prompts] icon library: cannot allocate {} bytes", result.movie.size());
+    return;
+  }
+  std::memcpy(g_base + copy, result.movie.data(), result.movie.size());
+  Store32(file + kFileBuffer, copy);
+  Store32(file + kFileSize, static_cast<uint32_t>(result.movie.size()));
+  Store32(file + kFilePosition, 0);
+  ctx.r3.u64 = data;
+  __imp__sub_82120A70(ctx, base);
+  ctx = saved;
+  REXLOG_INFO("[prompts] icon library: {} button icons show keys ({} -> {} bytes)", result.icons,
+              size, result.movie.size());
+}
+
+}  // namespace
+
+REX_HOOK_RAW(sub_8274C3F0) {
+  std::string url;
+  if (ctx.r4.u32) {
+    const char* p = reinterpret_cast<const char*>(base + ctx.r4.u32);
+    url.assign(p, strnlen(p, 260));
+  }
+  __imp__sub_8274C3F0(ctx, base);
+  const uint32_t file = ctx.r3.u32;
+  if (!file || !EndsWithNoCase(url, "_ExternalGenericIcons.gfx")) return;
+  if (!KeyboardPromptsWanted()) {
+    REXLOG_INFO("[prompts] icon library: controller icons");
+    return;
+  }
+  const PPCContext saved = ctx;
+  ReplaceIconLibrary(ctx, base, file);
+  ctx = saved;
 }

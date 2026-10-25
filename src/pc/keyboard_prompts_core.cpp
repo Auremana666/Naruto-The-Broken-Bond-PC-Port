@@ -144,6 +144,80 @@ std::string TagText(std::string_view tag, const KeybindLookup& lookup, bool mous
   return {};
 }
 
+std::string IconKeyName(std::string_view key) {
+  static constexpr std::pair<std::string_view, std::string_view> kNames[] = {
+      {"Return", "ENTER"}, {"Escape", "ESC"},   {"Control", "CTRL"}, {"Menu", "ALT"},
+      {"Back", "BKSP"},    {"Capital", "CAPS"}, {"Prior", "PGUP"},   {"Next", "PGDN"},
+      {"Delete", "DEL"},   {"Insert", "INS"},   {"Up", "UP"},        {"Down", "DOWN"},
+      {"Left", "LEFT"},    {"Right", "RIGHT"},
+  };
+  key = Trim(key);
+  for (const auto& [name, label] : kNames) {
+    if (EqualsNoCase(key, name)) return std::string(label);
+  }
+  std::string out(key);
+  for (char& c : out) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  if (out.rfind("NUMPAD", 0) == 0) out = "NUM" + out.substr(6);
+  return out;
+}
+
+std::string IconLabel(std::string_view icon, const KeybindLookup& lookup, bool mouse_look) {
+  // The base name: "ButtonA_64_Grey" -> "ButtonA", "ButtonLT_Hold" -> "ButtonLT".
+  const std::string_view base = icon.substr(0, icon.find('_'));
+  auto key = [&](std::string_view cvar) {
+    const std::string k = FirstKey(lookup(cvar));
+    return k.empty() ? std::string("?") : IconKeyName(k);
+  };
+  auto keys = [&](std::initializer_list<std::string_view> cvars) {
+    std::string out;
+    for (std::string_view cvar : cvars) {
+      const std::string k = FirstKey(lookup(cvar));
+      if (k.empty()) continue;
+      const std::string name = IconKeyName(k);
+      if (name.size() > 1) return std::string();  // only short keys fit together on one cap
+      out += name;
+    }
+    return out;
+  };
+  static constexpr std::pair<std::string_view, std::string_view> kSingle[] = {
+      {"ButtonA", "keybind_a"},
+      {"ButtonB", "keybind_b"},
+      {"ButtonX", "keybind_x"},
+      {"ButtonY", "keybind_y"},
+      {"ButtonLB", "keybind_left_shoulder"},
+      {"ButtonRB", "keybind_right_shoulder"},
+      {"ButtonLT", "keybind_left_trigger"},
+      {"ButtonRT", "keybind_right_trigger"},
+      {"Start", "keybind_start"},
+      {"Back", "keybind_back"},
+      {"DPadUp", "keybind_dpad_up"},
+      {"DPadDown", "keybind_dpad_down"},
+      {"DPadLeft", "keybind_dpad_left"},
+      {"DPadRight", "keybind_dpad_right"},
+      {"AnalogUp", "keybind_lstick_up"},
+      {"AnalogDown", "keybind_lstick_down"},
+      {"AnalogLeft", "keybind_lstick_left"},
+      {"AnalogRight", "keybind_lstick_right"},
+  };
+  for (const auto& [name, cvar] : kSingle) {
+    if (base == name) return key(cvar);
+  }
+  if (base == "DPad") {
+    return keys({"keybind_dpad_up", "keybind_dpad_down", "keybind_dpad_left",
+                 "keybind_dpad_right"});
+  }
+  if (base == "LeftAnalog" || base == "Analog") {
+    return keys({"keybind_lstick_up", "keybind_lstick_left", "keybind_lstick_down",
+                 "keybind_lstick_right"});
+  }
+  if (base == "RightAnalog") {
+    return mouse_look ? std::string("MOUSE")
+                      : keys({"keybind_rstick_up", "keybind_rstick_left", "keybind_rstick_down",
+                              "keybind_rstick_right"});
+  }
+  return {};
+}
+
 bool ExpandButtonTags(std::string_view text, const KeybindLookup& lookup, bool mouse_look,
                       std::string* out) {
   out->clear();

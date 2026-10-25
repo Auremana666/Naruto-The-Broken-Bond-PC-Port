@@ -31,6 +31,14 @@ bool IsButtonTag(std::string_view tag);
 // mouse_look: the right stick is on the mouse, so "<rightanalog>" reads "[Mouse]".
 std::string TagText(std::string_view tag, const KeybindLookup& lookup, bool mouse_look);
 
+// Short key name for a keycap icon ("Return" -> "ENTER", "Control" -> "CTRL", "j" -> "J").
+std::string IconKeyName(std::string_view key);
+
+// Label for one of the game's button icons, by its name in the icon library without the
+// "mcExternalGenericIcons_" prefix ("ButtonA", "ButtonLB_64", "Start", "DPadUp", "AnalogLeft").
+// Empty for icons that stay as they are (animations, stick rotations, non-button icons).
+std::string IconLabel(std::string_view icon, const KeybindLookup& lookup, bool mouse_look);
+
 // Replaces every button tag in the text; other tags (colours, <br>, <@...>) are kept.
 // Returns true when anything changed.
 bool ExpandButtonTags(std::string_view text, const KeybindLookup& lookup, bool mouse_look,

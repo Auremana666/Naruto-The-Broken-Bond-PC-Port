@@ -37,6 +37,8 @@ set(BROKENBOND_SOURCES
     src/pc/mouse_camera.cpp
     src/pc/keyboard_prompts.cpp
     src/pc/keyboard_prompts_core.cpp
+    src/pc/icon_prompts.cpp
+    src/pc/icon_library.cpp
 )
 
 # The shipping native build uses the Rise renderer adapted to Broken Bond,
