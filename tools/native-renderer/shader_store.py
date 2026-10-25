@@ -93,7 +93,14 @@ class Store:
         try:
             with os.fdopen(fd, 'wb') as out:
                 out.write(zlib.compress(data, 6) if compressed else data)
-            os.replace(temp, path)
+            try:
+                os.replace(temp, path)
+            except PermissionError:
+                # Windows refuses to replace a file another worker is writing or reading. The
+                # store is content-addressed, so that file holds the same bytes: keep it.
+                if not path.exists():
+                    raise
+                Path(temp).unlink(missing_ok=True)
         except BaseException:
             Path(temp).unlink(missing_ok=True)
             raise

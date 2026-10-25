@@ -1,8 +1,7 @@
 diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
-index 36a47c7..774304f 100644
 --- a/include/rex/input/mnk/mnk_input_driver.h
 +++ b/include/rex/input/mnk/mnk_input_driver.h
-@@ -25,6 +25,11 @@ namespace rex::input::mnk {
+@@ -25,6 +25,12 @@
  void SetMouseLookActive(bool active);
  bool IsMouseLookActive();
  
@@ -11,21 +10,21 @@ index 36a47c7..774304f 100644
 +// by it. The mouse is still captured as for mnk_mouse.
 +void SetDirectMouseLook(bool on);
 +bool TakeMouseLook(float* dx, float* dy);
- 
++
  class MnkInputDriver final : public InputDriver,
                               public rex::ui::WindowInputListener,
+                              public rex::ui::WindowListener {
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index d9436ac..210829e 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
-@@ -187,8 +187,26 @@ uint8_t StandaloneModifiers(const std::string& cvar_val) {
+@@ -187,9 +187,26 @@
  }
  
  std::atomic<bool> mouse_look_active{true};
 +std::atomic<bool> direct_mouse_look{false};
 +std::mutex direct_mutex;
 +float direct_dx = 0.0f, direct_dy = 0.0f;
-+
+ 
  }  // namespace
  
 +void SetDirectMouseLook(bool on) {
@@ -45,7 +44,7 @@ index d9436ac..210829e 100644
  void SetMouseLookActive(bool active) {
    mouse_look_active.store(active, std::memory_order_relaxed);
  }
-@@ -397,7 +415,12 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+@@ -398,7 +415,12 @@
    if (pressed(REXCVAR_GET(keybind_rstick_down)))
      ry -= INT16_MAX;
  
