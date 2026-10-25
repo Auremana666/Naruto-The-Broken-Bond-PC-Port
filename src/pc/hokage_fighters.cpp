@@ -13,9 +13,8 @@
 //    bigfile is little endian.
 //  - The slot's identity (All_NinjaIdentities.wow) gets the Hokage's name text, so the fight
 //    shows FIRST HOKAGE or SECOND HOKAGE. That file is unpacked once, at boot.
-// A fighter choice applies at the next fight, the name after a restart. With a Hokage in a
-// slot, his own Story Mode fight against Sarutobi uses that slot's identity too, so the option
-// is meant for Fight Mode.
+// A fighter choice applies at the next fight, the name after a restart. Story Mode's fight
+// against the Hokages is recognized by the puppet worlds it loads and left as it is.
 //
 // For testing, REX_DATA_PATCH=<file> applies extra edits to every unpacked chunk, one per line:
 // "<find hex> <replace hex>" (same length).
@@ -73,8 +72,13 @@ std::array<Slot, 2> g_slots = {{
     {"black_sasuke_slot", 0x2D0032F2, 0x2D0032FD, {0x2D0032F3, 0x40003F11}, 0x00000000, 0x62, 0x6360, {}},
 }};
 
+// Puppet_First.wow and Puppet_Second.wow, loaded only by Story Mode's Hokage fight.
+constexpr std::array<uint32_t, 2> kStoryPuppets = {0x2D001413, 0x2D00141C};
+
 uint8_t* g_base = nullptr;
 std::mutex g_mutex;
+uint32_t g_world = 0;        // the world file being unpacked
+bool g_story_fight = false;  // set while Story Mode's Hokage fight loads
 
 uint32_t Load32(uint8_t* base, uint32_t address) {
   return _byteswap_ulong(*reinterpret_cast<uint32_t*>(base + address));
@@ -196,11 +200,26 @@ REX_HOOK_RAW(sub_82BBB400) {
   __imp__sub_82BBB400(ctx, base);
   const uint32_t length = Load32(base, dst_len);
   uint8_t* data = base + dst;
+  // A world file's first chunk starts with {size, 0xEEFFC099, its own key, ".wow"}; later chunks
+  // belong to the same world.
+  uint32_t marker = 0, key = 0, ext = 0;
+  if (length >= 16) {
+    std::memcpy(&marker, data + 4, 4);
+    std::memcpy(&key, data + 8, 4);
+    std::memcpy(&ext, data + 12, 4);
+  }
+  if (marker == 0xEEFFC099 && ext == 0x776F772E) {
+    // Story Mode's Hokage fight loads Puppet_First/Puppet_Second, then Ninja_First and
+    // Ninja_Second; Fight Mode never loads the puppets. That fight keeps the story identities.
+    if (key == kStoryPuppets[0] || key == kStoryPuppets[1]) g_story_fight = true;
+    else if (g_world == kHokages[1].fighter_world) g_story_fight = false;
+    g_world = key;
+  }
   // The Hokage's fighter keeps his own voice (sound key) and takes the slot's identity.
   std::array<bool, kHokages.size()> done{};
   for (const Slot& slot : g_slots) {
     const Hokage* hokage = Chosen(slot);
-    if (!hokage) continue;
+    if (!hokage || g_story_fight || g_world != hokage->fighter_world) continue;
     const size_t h = static_cast<size_t>(hokage - kHokages.data());
     if (done[h]) continue;  // one identity per Hokage: the first slot that picked him
     done[h] = true;
