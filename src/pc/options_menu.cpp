@@ -553,6 +553,12 @@ void OptionsMenu::BuildPages() {
                                  {"EVENING", "evening"},
                                  {"SUNSET", "sunset"}},
                                 "One weather everywhere, fights included. Changes right away. GAME brings back the normal one."));
+  cheats.items.push_back(choice("YOUNG ITACHI SLOT", "young_itachi_slot",
+                                {{"YOUNG ITACHI", "itachi"}, {"FIRST HOKAGE", "first"}, {"SECOND HOKAGE", "second"}},
+                                "Fight Mode: a Hokage takes Young Itachi's place from the next fight, his name after a restart. Keep it off for Story Mode."));
+  cheats.items.push_back(choice("BLACK SASUKE SLOT", "black_sasuke_slot",
+                                {{"BLACK SASUKE", "sasuke"}, {"FIRST HOKAGE", "first"}, {"SECOND HOKAGE", "second"}},
+                                "Fight Mode: a Hokage takes Black Sasuke's place from the next fight, his name after a restart. Keep it off for Story Mode."));
   {
     Item auto_jutsu = submenu("AUTO JUTSU", 10);
     auto_jutsu.help = "One button does your character's jutsu, on the keyboard and controllers.";

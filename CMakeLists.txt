@@ -36,6 +36,7 @@ set(BROKENBOND_SOURCES
     src/pc/title_screen.cpp
     src/pc/ultrawide.cpp
     src/pc/mouse_camera.cpp
+    src/pc/hokage_fighters.cpp
 )
 
 # The shipping native build uses the Rise renderer adapted to Broken Bond,
