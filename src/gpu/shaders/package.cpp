@@ -5,6 +5,12 @@
 #include <windows.h>
 #include <fmt/format.h>
 #include "gpu/common/sha256.h"
+// The inflate of stb_image (its zlib decoder), for the zlib containers.
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "pc/stb_image.h"
 #if BROKENBOND_SHADER_CACHE_SPIRV
 #include "smolv.h"
 #endif
@@ -37,20 +43,11 @@ uint64_t U64(const uint8_t* p) {
   return v;
 }
 
-// The payload of a container: "NRSC", u32 version 1, u32 algorithm 2
-// (MSZIP), u32 0, u64 payload bytes, u64 compressed bytes, the SHA-256 of the
-// payload, then the compressed payload.
-bool Decompress(const uint8_t* c, size_t size, ShaderPackage& package, std::string& error) {
-  constexpr size_t kHeader = 64;  // Magic, 3 x u32, 2 x u64, SHA-256.
-  if (size < kHeader || std::memcmp(c, "NRSC", 4) || U32(c + 4) != 1 || U32(c + 8) != 2) {
-    error = "embedded-container";
-    return false;
-  }
-  const uint64_t payload_bytes = U64(c + 16), packed_bytes = U64(c + 24);
-  if (packed_bytes != size - kHeader || payload_bytes > (uint64_t(1) << 30)) {
-    error = "embedded-sizes";
-    return false;
-  }
+// MSZIP through the Windows Compression API (the containers of before). Wine
+// and Proton lack it (no export, or a stub that copies the input), so the
+// Steam Deck drew nothing: every draw lost its shaders.
+bool DecompressMszip(const uint8_t* packed, uint64_t packed_bytes, uint64_t payload_bytes, ShaderPackage& package,
+                     std::string& error) {
   HMODULE cabinet = LoadLibraryW(L"cabinet.dll");
   using Create = BOOL(WINAPI*)(DWORD, void*, HANDLE*);
   using Run = BOOL(WINAPI*)(HANDLE, const void*, SIZE_T, void*, SIZE_T, SIZE_T*);
@@ -65,12 +62,41 @@ bool Decompress(const uint8_t* c, size_t size, ShaderPackage& package, std::stri
   }
   package.payload.resize(size_t(payload_bytes));
   SIZE_T written = 0;
-  const bool unpacked = run(decompressor, c + kHeader, SIZE_T(packed_bytes), package.payload.data(),
+  const bool unpacked = run(decompressor, packed, SIZE_T(packed_bytes), package.payload.data(),
                             SIZE_T(payload_bytes), &written);
   close(decompressor);
   if (!unpacked || written != payload_bytes) {
     error = "embedded-decompress";
     return false;
+  }
+  return true;
+}
+
+// The payload of a container: "NRSC", u32 version 1, u32 algorithm 3 (zlib)
+// or 2 (MSZIP), u32 0, u64 payload bytes, u64 compressed bytes, the SHA-256 of
+// the payload, then the compressed payload.
+bool Decompress(const uint8_t* c, size_t size, ShaderPackage& package, std::string& error) {
+  constexpr size_t kHeader = 64;  // Magic, 3 x u32, 2 x u64, SHA-256.
+  const uint32_t algorithm = size >= kHeader ? U32(c + 8) : 0;
+  if (size < kHeader || std::memcmp(c, "NRSC", 4) || U32(c + 4) != 1 || (algorithm != 2 && algorithm != 3)) {
+    error = "embedded-container";
+    return false;
+  }
+  const uint64_t payload_bytes = U64(c + 16), packed_bytes = U64(c + 24);
+  if (packed_bytes != size - kHeader || payload_bytes > (uint64_t(1) << 30) || packed_bytes > (uint64_t(1) << 30)) {
+    error = "embedded-sizes";
+    return false;
+  }
+  if (algorithm == 2) {
+    if (!DecompressMszip(c + kHeader, packed_bytes, payload_bytes, package, error)) return false;
+  } else {
+    package.payload.resize(size_t(payload_bytes));
+    const int written = stbi_zlib_decode_buffer(reinterpret_cast<char*>(package.payload.data()), int(payload_bytes),
+                                                reinterpret_cast<const char*>(c + kHeader), int(packed_bytes));
+    if (written < 0 || uint64_t(written) != payload_bytes) {
+      error = "embedded-inflate";
+      return false;
+    }
   }
   std::string expected;
   for (unsigned i = 0; i < 32; ++i) expected += fmt::format("{:02x}", c[32 + i]);

@@ -8,8 +8,8 @@ points at SPIR-V (a build with the Vulkan backend), a second file,
 shader_cache_spirv.bin, holds the modules and the manifest; the renderer unpacks the
 one of its API only.
 
-Container (little endian): "NRSC", u32 version 1, u32 algorithm 2 (MSZIP of the
-Windows Compression API, buffer mode), u32 0, u64 payload bytes, u64 compressed bytes,
+Container (little endian): "NRSC", u32 version 1, u32 algorithm 3 (zlib, RFC 1950;
+2 was MSZIP of the Windows Compression API, which Wine and Proton lack), u32 0, u64 payload bytes, u64 compressed bytes,
 32-byte SHA-256 of the payload, then the compressed payload.
 Payload: "NRSP", u32 version, u32 index bytes, u32 files, the index text (the
 lines of the binary directories say "embedded") padded to 4, one record per file (u32
@@ -35,31 +35,21 @@ Writes shader_cache.bin, shader_cache_spirv.bin with SPIR-V (the manifest and th
 encoded passes are required then) and shader_cache.json (identity: inputs, counts,
 sizes and SHA-256) into the output dir.
 """
-import ctypes
 import hashlib
 import json
 import struct
 import sys
+import zlib
 from pathlib import Path
 
-MSZIP = 2
+ZLIB = 3
 KIND_DXIL, KIND_VARIANT, KIND_SPIRV, KIND_MANIFEST, KIND_PASS = 0, 2, 3, 4, 5
 
 
 def compress(data):
-    cabinet = ctypes.WinDLL('cabinet.dll')
-    handle = ctypes.c_void_p()
-    if not cabinet.CreateCompressor(MSZIP, None, ctypes.byref(handle)):
-        raise OSError('CreateCompressor')
-    try:
-        size = ctypes.c_size_t()
-        cabinet.Compress(handle, data, len(data), None, 0, ctypes.byref(size))
-        out = ctypes.create_string_buffer(size.value)
-        if not cabinet.Compress(handle, data, len(data), out, size.value, ctypes.byref(size)):
-            raise OSError('Compress')
-        return out.raw[:size.value]
-    finally:
-        cabinet.CloseCompressor(handle)
+    # zlib (RFC 1950), which the renderer inflates itself: the Windows Compression API
+    # (MSZIP, algorithm 2 of before) is absent or a stub under Wine and Proton.
+    return zlib.compress(data, 9)
 
 
 def pad4(data):
@@ -80,7 +70,7 @@ def package(version, lines, entries, binary):
     payload += b''.join(blobs)
     packed = compress(payload)
     digest = hashlib.sha256(payload).digest()
-    container = b'NRSC' + struct.pack('<IIIQQ', 1, MSZIP, 0, len(payload), len(packed)) + digest + packed
+    container = b'NRSC' + struct.pack('<IIIQQ', 1, ZLIB, 0, len(payload), len(packed)) + digest + packed
     binary.write_bytes(container)
     return dict(payload_bytes=len(payload), payload_sha256=digest.hex(), compressed_bytes=len(packed),
                 container=dict(path=str(binary.resolve()), sha256=hashlib.sha256(container).hexdigest()))
@@ -134,7 +124,7 @@ def main():
         dxil_dir=str(dirs['dxil']), variants_dir=str(dirs['variants']), entries=len(names),
         dxil_files=sum(1 for e in entries if e[0] == KIND_DXIL),
         variant_files=sum(1 for e in entries if e[0] == KIND_VARIANT), **dxil,
-        algorithm='MSZIP (Windows Compression API, buffer mode)',
+        algorithm='zlib (RFC 1950)',
         tool=dict(path=str(Path(__file__).resolve()), sha256=sha(Path(__file__))))
     if manifest:
         full = json.loads(manifest.read_text(encoding='utf-8'))
