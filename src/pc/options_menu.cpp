@@ -583,6 +583,15 @@ void OptionsMenu::BuildPages() {
                                 "Every character in Fight Mode. Your save is not changed."));
   cheats.items.push_back(toggle("UNLOCK ALL ARENAS", "unlock_all_arenas",
                                 "Every arena in Fight Mode. Your save is not changed."));
+  {
+    Item hidden = submenu("HIDDEN CHARACTERS & SKINS", 13);
+    hidden.help = "Fight Mode characters can wear the First or the Second Hokage's skin.";
+    hidden.summary = []() {
+      const bool on = GetSetting(hokage::kFirstSetting) != "off" || GetSetting(hokage::kSecondSetting) != "off";
+      return std::string(on ? "ON" : "OFF");
+    };
+    cheats.items.push_back(hidden);
+  }
   cheats.items.push_back(choice("WEATHER", "weather",
                                 {{"GAME", "game"},
                                  {"DAY", "day"},
@@ -622,15 +631,6 @@ void OptionsMenu::BuildPages() {
     key.single_key = true;
     key.help = "Hold it to run the game faster, for cutscenes you cannot skip.";
     cheats.items.push_back(key);
-  }
-  {
-    Item hidden = submenu("HIDDEN CHARACTERS & SKINS", 13);
-    hidden.help = "Fight Mode characters can wear the First or the Second Hokage's skin.";
-    hidden.summary = []() {
-      const bool on = GetSetting(hokage::kFirstSetting) != "off" || GetSetting(hokage::kSecondSetting) != "off";
-      return std::string(on ? "ON" : "OFF");
-    };
-    cheats.items.push_back(hidden);
   }
   {
     Item auto_jutsu = submenu("AUTO JUTSU", 10);
@@ -687,8 +687,7 @@ void OptionsMenu::BuildPages() {
     item.kind = Kind::kAction;
     item.label = kHokageRows[h].first;
     item.picture = static_cast<int>(h);
-    item.help = "Pick the Fight Mode character who wears his skin (not Naruto). Only a skin: the "
-                "character keeps their own moves. The name changes after a restart.";
+    item.help = "Pick who wears his skin. Only a skin: they keep their own moves.";
     item.summary = [setting]() {
       const std::string value = GetSetting(setting);
       for (const auto& character : hokage::Roster()) {
@@ -2280,7 +2279,7 @@ void OptionsMenu::DrawGrid(ImDrawList* dl, ImGuiIO& io, float alpha) {
 
   // The note at the bottom: a skin, not a fighter of his own.
   OutlinedText(dl, ImVec2(x0, h - S(110.0f)), S(28.0f), kWhite,
-               "ONLY A SKIN: THE CHARACTER KEEPS THEIR OWN MOVES, NOT A FULL HOKAGE FIGHTER.", alpha * 0.9f);
+               "ONLY A SKIN: THEY KEEP THEIR OWN MOVES.", alpha * 0.9f);
 
   // Button prompts, bottom right.
   const float prompt_y = h - S(80.0f);

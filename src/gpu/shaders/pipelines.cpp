@@ -232,8 +232,11 @@ void StartPipelinePrecompile() {
     }
     p.layouts.push_back(layout);
   }
-  // Two thirds of the hardware threads, at least two.
-  p.threads = std::max(2u, std::thread::hardware_concurrency() * 2 / 3);
+  // Two thirds of the hardware threads, at least two; one under Wine / Proton,
+  // so the pipeline guard of the backend (RADV crashes) names one culprit.
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  const bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version");
+  p.threads = wine ? 1u : std::max(2u, std::thread::hardware_concurrency() * 2 / 3);
   p.started = std::chrono::steady_clock::now();
   p.pool_started.store(true, std::memory_order_release);
   const bool started = dispatcher->StartPool(kPipelineCache.size(), p.threads, PrecompileEntry, [](bool stopped) {

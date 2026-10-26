@@ -24,6 +24,9 @@
 #include <algorithm>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <set>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
@@ -2579,6 +2582,80 @@ void TracePipeline(const char* what, const std::array<uint32_t, 21>& w, const st
   std::fflush(file);
 }
 
+// The crash guard of pipeline creation under Wine / Proton. RADV on the Steam
+// Deck takes the whole process down while compiling some pipelines (a NULL
+// read inside libvulkan_radeon.so, in the Unix side of vkCreateGraphicsPipelines,
+// which no exception handler sees). Every pipeline being created is listed in
+// pipeline-guard-pending.txt next to the executable, rewritten as creations
+// start and end; a run that dies leaves the culprit there, and the next run
+// moves those lines to pipeline-guard.txt and never creates them again: their
+// draws are skipped. Off on Windows unless REX_PIPELINE_GUARD=1 (a test).
+class PipelineGuard {
+ public:
+  static PipelineGuard& Get() {
+    static PipelineGuard guard;
+    return guard;
+  }
+  // Wine's ntdll exports wine_get_version.
+  static bool UnderWine() {
+    static const bool wine = [] {
+      const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+      return ntdll && GetProcAddress(ntdll, "wine_get_version");
+    }();
+    return wine;
+  }
+  static bool Enabled() {
+    static const bool enabled = UnderWine() || std::getenv("REX_PIPELINE_GUARD");
+    return enabled;
+  }
+  bool Blocked(const std::string& key) {
+    std::lock_guard lock(mutex_);
+    return enabled_ && blocked_.contains(key);
+  }
+  void Begin(const std::string& key) { Change(key, true); }
+  void End(const std::string& key) { Change(key, false); }
+
+ private:
+  PipelineGuard() {
+    enabled_ = Enabled();
+    if (!enabled_) return;
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const std::filesystem::path folder = std::filesystem::path(exe).parent_path();
+    pending_path_ = folder / "pipeline-guard-pending.txt";
+    const std::filesystem::path blocked_path = folder / "pipeline-guard.txt";
+    std::vector<std::string> crashed;
+    {
+      std::ifstream pending(pending_path_);
+      for (std::string line; std::getline(pending, line);)
+        if (!line.empty()) crashed.push_back(line);
+    }
+    if (!crashed.empty()) {
+      std::ofstream out(blocked_path, std::ios::app);
+      for (const auto& line : crashed) out << line << "\n";
+    }
+    std::ifstream blocked(blocked_path);
+    for (std::string line; std::getline(blocked, line);)
+      if (!line.empty()) blocked_.insert(line);
+    std::error_code ignored;
+    std::filesystem::remove(pending_path_, ignored);
+  }
+  void Change(const std::string& key, bool begin) {
+    if (!enabled_) return;
+    std::lock_guard lock(mutex_);
+    if (begin) in_flight_.insert(key);
+    else in_flight_.erase(key);
+    std::ofstream out(pending_path_, std::ios::trunc);
+    for (const auto& line : in_flight_) out << line << "\n";
+    out.flush();
+  }
+  bool enabled_ = false;
+  std::mutex mutex_;
+  std::filesystem::path pending_path_;
+  std::unordered_set<std::string> blocked_;
+  std::multiset<std::string> in_flight_;
+};
+
 HRESULT CreateDrawPipeline(ID3D12Device* device, ID3D12RootSignature* root, const std::array<uint32_t, 21>& w,
                            const std::vector<VertexElement>& elements, const std::vector<uint8_t>& vs,
                            const std::vector<uint8_t>* ps, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out,
@@ -2651,8 +2728,19 @@ HRESULT CreateDrawPipeline(ID3D12Device* device, ID3D12RootSignature* root, cons
   d.RTVFormats[0] = has_color ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_UNKNOWN;
   d.DSVFormat = has_depth ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_UNKNOWN;
   d.SampleDesc.Count = w[8];
+  PipelineGuard& guard = PipelineGuard::Get();
+  const std::string guard_key = PipelineGuard::Enabled()
+      ? fmt::format("vs={:016x} ps={:016x} w={:08x}", Fnv64(vs.data(), vs.size(), 0xCBF29CE484222325ull),
+                    ps ? Fnv64(ps->data(), ps->size(), 0xCBF29CE484222325ull) : 0, fmt::join(w, ","))
+      : std::string();
+  if (guard.Blocked(guard_key)) {
+    reason = "native-draw-pipeline-guarded";
+    return E_FAIL;
+  }
   TracePipeline("create", w, vs, ps);
+  guard.Begin(guard_key);
   const HRESULT hr = device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&out));
+  guard.End(guard_key);
   TracePipeline(FAILED(hr) ? "failed" : "created", w, vs, ps);
   if (FAILED(hr)) reason = "native-draw-pipeline";
   return hr;
