@@ -38,7 +38,7 @@ inline const std::vector<Shortcut>& ShortcutList() {
       {"bind_toggle_logs", "LOG FILES (WITH CTRL)", "F12", "Ctrl + this key turns log files in logs/ on or off.", -1},
       {"bind_debug_overlay", "ADVANCED FPS", "", "Detailed frame rate and performance overlay.", -1},
       {"bind_achievements", "ACHIEVEMENTS", "F7", "Shows the achievements you have unlocked.", -1},
-      {"bind_speed_up", "SPEED UP (HOLD)", "F5", "Hold to run the game faster, for cutscenes you cannot skip.", -1},
+      {"bind_speed_up", "SPEED UP (HOLD)", "NumpadPlus", "Hold to run the game faster, for cutscenes you cannot skip.", -1},
       {"bind_free_camera", "FREE CAMERA", "F6",
        "Freezes the game and flies the camera: WASD, Space / Ctrl, Shift, mouse or arrows.", -1},
       {"bind_open_display", "OPEN DISPLAY", "", "Jumps straight to the Display page.", 1},

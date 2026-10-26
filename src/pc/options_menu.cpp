@@ -567,7 +567,7 @@ void OptionsMenu::BuildPages() {
                                 "One weather everywhere, fights included. Changes right away. GAME brings back the normal one."));
   cheats.items.push_back(choice("SPEED UP", "speed_up_factor",
                                 {{"2X", "2"}, {"3X", "3"}, {"4X", "4"}, {"6X", "6"}, {"8X", "8"}},
-                                "How much faster the game runs while the SPEED UP key (F5) is held. Shortcut "
+                                "How much faster the game runs while the SPEED UP key (Numpad +) is held. Shortcut "
                                 "Keys changes the key. Vertical sync limits it."));
   {
     Item hidden = submenu("HIDDEN CHARACTERS & SKINS", 13);
