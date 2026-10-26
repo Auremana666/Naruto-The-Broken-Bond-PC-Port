@@ -36,6 +36,8 @@ set(BROKENBOND_SOURCES
     src/pc/title_screen.cpp
     src/pc/ultrawide.cpp
     src/pc/mouse_camera.cpp
+    src/pc/free_camera.cpp
+    src/pc/game_speed.cpp
     src/pc/hokage_fighters.cpp
 )
 

@@ -37,6 +37,8 @@ void StopIdlePresenter();
 #endif
 #include "pc/auto_jutsu.h"
 #include "pc/fps_counter.h"
+#include "pc/free_camera.h"
+#include "pc/game_speed.h"
 #include "pc/input_layout.h"
 #include "pc/mouse_camera.h"
 #include "pc/options_menu.h"
@@ -265,6 +267,13 @@ class BrokenBondApp : public rex::ReXApp {
       ShowToast(on ? "LOG FILES: ON" : "LOG FILES: OFF");
     });
 
+    // F6 (rebindable in PC Options > Shortcut Keys): free camera on/off.
+    rex::ui::RegisterBind("bind_free_camera", "F6", "Toggle free camera", [this]() {
+      if (options_ && options_->IsCapturing()) return;
+      ToggleFreeCamera();
+      ShowToast(FreeCameraOn() ? "FREE CAMERA: ON" : "FREE CAMERA: OFF");
+    });
+
     // F2 (rebindable in PC Options > Shortcut Keys): FPS counter on/off, saved to naruto.toml.
     rex::ui::RegisterBind("bind_fps_counter", "F2", "Toggle FPS counter", [this]() {
       if (options_ && options_->IsCapturing()) return;
@@ -282,6 +291,7 @@ class BrokenBondApp : public rex::ReXApp {
     rex::ui::UnregisterBind("bind_exit_game");
     rex::ui::UnregisterBind("bind_options");
     rex::ui::UnregisterBind("bind_fps_counter");
+    rex::ui::UnregisterBind("bind_free_camera");
     rex::ui::UnregisterBind("bind_toggle_logs");
     for (const auto& sc : ShortcutList()) {
       if (sc.page >= 0) rex::ui::UnregisterBind(sc.cvar);
@@ -327,6 +337,7 @@ class BrokenBondApp : public rex::ReXApp {
     // Also the per-frame place for the aspect ratio setting (PC Options > Display).
     UpdateUltrawide(runtime() ? runtime()->virtual_membase() : nullptr);
     UpdateMouseCamera();
+    UpdateGameSpeed();
     const uint32_t pads = ReadPads();
     const bool held = (pads & kPadBack) && (pads & kPadStart);
     if (held && !shortcut_held_) {

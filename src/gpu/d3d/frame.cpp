@@ -152,6 +152,7 @@ struct SwapLimiter {
   HANDLE timer = nullptr;
   int64_t frequency = 0, next = 0;
   uint32_t interval = 0, rate = 0;  // rate: the frame rate of the state interpolation mode, else 0.
+  float speed = 1.0f;               // tick::PaceSpeed() of the last pace.
   uint64_t paced = 0, waited = 0, late = 0, max_late_us = 0, timer_failures = 0;
 } swap_limiter;
 std::string LimiterSummary() {
@@ -272,7 +273,11 @@ void PaceSwap(PPCContext& ctx, uint8_t* base, uint32_t dev) {
   if (interval != l.interval || rate != l.rate) l.next = 0;  // A new period starts a new phase.
   l.interval = interval;
   l.rate = rate;
-  const int64_t period = rate ? l.frequency / rate : int64_t(interval) * l.frequency / 60;
+  // The PC speed up paces faster by the part its longer step does not cover.
+  const float speed = tick::PaceSpeed();
+  const int64_t period = int64_t(double(rate ? l.frequency / rate : int64_t(interval) * l.frequency / 60) / speed);
+  if (speed != l.speed) l.next = 0;
+  l.speed = speed;
   LARGE_INTEGER now{};
   QueryPerformanceCounter(&now);
   ++l.paced;

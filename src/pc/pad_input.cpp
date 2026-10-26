@@ -1,5 +1,6 @@
 #include "pad_input.h"
 
+#include <cstdlib>
 #include <initializer_list>
 
 #define WIN32_LEAN_AND_MEAN
@@ -39,6 +40,14 @@ PadRaw ReadPadRaw() {
     raw.buttons |= state.Gamepad.wButtons;
     if (state.Gamepad.bLeftTrigger > raw.left_trigger) raw.left_trigger = state.Gamepad.bLeftTrigger;
     if (state.Gamepad.bRightTrigger > raw.right_trigger) raw.right_trigger = state.Gamepad.bRightTrigger;
+    auto further = [](int16_t& kept, int16_t& kept_other, int16_t x, int16_t y) {
+      if (std::abs(x) + std::abs(y) > std::abs(kept) + std::abs(kept_other)) {
+        kept = x;
+        kept_other = y;
+      }
+    };
+    further(raw.left_x, raw.left_y, state.Gamepad.sThumbLX, state.Gamepad.sThumbLY);
+    further(raw.right_x, raw.right_y, state.Gamepad.sThumbRX, state.Gamepad.sThumbRY);
   }
   return raw;
 }

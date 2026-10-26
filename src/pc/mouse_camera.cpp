@@ -17,6 +17,7 @@
 // elsewhere goes back to moving the right stick.
 
 #include "mouse_camera.h"
+#include "free_camera.h"
 
 #include <algorithm>
 #include <atomic>
@@ -108,7 +109,7 @@ void Turn(uint8_t* base, uint32_t player) {
 void UpdateMouseCamera() {
   const bool turnable = Now() - g_last_turnable.load(std::memory_order_relaxed) <
                         std::chrono::steady_clock::duration(kIdle).count();
-  rex::input::mnk::SetDirectMouseLook(Wanted() && turnable);
+  rex::input::mnk::SetDirectMouseLook((Wanted() && turnable) || (FreeCameraOn() && MouseOn()));
 }
 
 REX_HOOK_RAW(sub_828793B0) {

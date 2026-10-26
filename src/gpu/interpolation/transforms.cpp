@@ -1,6 +1,7 @@
 // The transforms between two logic ticks (transforms.h).
 #include "gpu/interpolation/transforms.h"
 #include "gpu/interpolation/tick.h"
+#include "pc/free_camera.h"
 #include "gpu/common/guest_memory.h"
 #include "gpu/common/title_loading.h"
 #include "gpu/d3d/d3d.h"
@@ -801,12 +802,17 @@ REX_HOOK_RAW(sub_82BD9108) {
   const float scale = FieldOfViewScale();
   const bool widen = entry && scale != 1.0f;
   const uint32_t fov_bits = widen ? gpu::Get32(base, entry + 148) : 0;
+  // PC free camera: its matrix for this build only, the entry's own comes back after.
+  std::array<float, 16> own_camera;
+  const bool free_camera = ApplyFreeCamera(base, entry, own_camera);
   if (widen) {
     const float fov = gpu::GetFloat(base, entry + 148);
     if (std::isfinite(fov) && fov > 0.0f) gpu::PutFloat(base, entry + 148, std::min(fov * scale, 2.8f));
   }
   __imp__sub_82BD9108(ctx, base);
   if (widen) gpu::Put32(base, entry + 148, fov_bits);
+  if (free_camera)
+    for (uint32_t i = 0; i < 16; ++i) gpu::PutFloat(base, entry + 4 * i, own_camera[i]);
 }
 // The camera's field of view set by the logic (82BEF560 blends it over time,
 // the gate's zoom-out and the fight cameras; 82BEF718 sets it at once; r3 the

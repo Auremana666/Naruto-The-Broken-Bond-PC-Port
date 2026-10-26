@@ -84,4 +84,17 @@ const char* Label();
 // step, main thread: the engine's dt of the view block (above).
 void BeginView(uint8_t* base);
 void EndView(uint8_t* base);
+// PC speed up (pc/game_speed.h), any thread: the game runs this many times
+// faster, 1 normally. While above 1 every iteration is a tick (no gate) whose
+// fixed step is lengthened up to 1/15 s, and the own limiter paces the rest
+// of the factor faster (PaceSpeed); vertical sync or a slow frame caps that
+// part.
+void SetSpeed(float speed);
+float Speed();
+float PaceSpeed();
+// PC free camera (pc/free_camera.h), any thread: while frozen, no iteration
+// is a tick; the view block runs alone with the engine's dt at 0, so the
+// world stands still and only the camera moves.
+void SetFrozen(bool frozen);
+bool Frozen();
 }  // namespace gpu::tick

@@ -44,6 +44,11 @@ bool switched_off = false, f8_down = false;
 // The limiter's rate (PaceRate), decided on the main thread and read by the
 // render thread; 0 before the first decision.
 std::atomic<uint32_t> pace_rate{0};
+std::atomic<float> speed{1.0f};
+std::atomic<float> pace_speed{1.0f};  // PaceSpeed.
+// The longest fixed step the speed up gives a tick (SpeedStep).
+constexpr float kSpeedStepMax = 1.0f / 15.0f;
+std::atomic<bool> frozen{false};
 // Main thread.
 Frame frame;
 bool decided = false, started = false, in_step = false;
@@ -156,7 +161,7 @@ void Decide(uint8_t* base) {
   const double frame_period = 1.0 / double(FrameRate());
   // A step of 0 is the pause: the logic runs every frame without advancing.
   const bool valid_period = fixed && std::isfinite(period) && period > 1e-4f && period <= 0.25f;
-  const bool gate = Owning() && valid_period && period > frame_period * 1.25;
+  const bool gate = Owning() && valid_period && period > frame_period * 1.25 && Speed() == 1.0f;
   // Without the gate under the fixed step, every iteration is a tick at the
   // title's step: the limiter paces at the tick rate (PaceRate).
   pace_rate.store(valid_period && !gate ? uint32_t(std::lround(1.0 / double(period))) : FrameRate());
@@ -236,6 +241,41 @@ void ViewBlock(PPCContext& ctx, uint8_t* base) {
 }
 
 bool Gating() { return gpu::Active() && Enabled(); }
+
+// The speed up of a tick (SetSpeed): the fixed step (+76) lengthened up to
+// kSpeedStepMax for the main step, so one tick advances the game more; the
+// limiter paces the rest of the factor (PaceSpeed). Put back after the step
+// unless the logic set a new one.
+struct SpeedStep {
+  uint32_t time = 0;
+  float own = 0.0f, set = 0.0f;
+};
+SpeedStep BeginSpeedStep(uint8_t* base) {
+  const float factor = Speed();
+  const uint32_t time = factor > 1.0f ? Get32(base, kTimePointer) : 0u;
+  const float own = time && Get32(base, time + 72) ? GetFloat(base, time + 76) : 0.0f;
+  if (!std::isfinite(own) || own <= 1e-4f || own > 0.25f) {
+    pace_speed.store(factor);
+    return {};
+  }
+  const float step_factor = std::clamp(kSpeedStepMax / own, 1.0f, factor);
+  pace_speed.store(factor / step_factor);
+  const SpeedStep step{time, own, own * step_factor};
+  PutFloat(base, time + 76, step.set);
+  return step;
+}
+void EndSpeedStep(uint8_t* base, const SpeedStep& step) {
+  if (step.time && GetFloat(base, step.time + 76) == step.set) PutFloat(base, step.time + 76, step.own);
+}
+
+// A frozen iteration (SetFrozen): the view block with the engine's dt at 0.
+void FrozenStep(PPCContext& ctx, uint8_t* base) {
+  const uint32_t time = Get32(base, kTimePointer);
+  const EngineDt saved = time ? ReadDt(base, time) : EngineDt{};
+  if (time) WriteDt(base, time, {});
+  ViewBlock(ctx, base);
+  if (time) WriteDt(base, time, saved);
+}
 }  // namespace
 
 bool Enabled() {
@@ -298,6 +338,15 @@ void EndView(uint8_t* base) {
   view_address = 0;
 }
 
+void SetSpeed(float value) {
+  speed.store(value >= 1.0f && value <= 16.0f ? value : 1.0f);
+  if (speed.load() == 1.0f) pace_speed.store(1.0f);
+}
+float PaceSpeed() { return pace_speed.load(std::memory_order_relaxed); }
+float Speed() { return speed.load(std::memory_order_relaxed); }
+void SetFrozen(bool value) { frozen.store(value); }
+bool Frozen() { return frozen.load(std::memory_order_relaxed); }
+
 const char* Label() {
   if (!Enabled() || !by_variable) return "";
   if (switched_off) return "F8: off";
@@ -307,6 +356,7 @@ const char* Label() {
 
 // The two calls of the main loop.
 void WorldChangeStep(PPCContext& ctx, uint8_t* base) {
+  if (gpu::Active() && Frozen()) return;
   if (Gating()) {
     Decide(base);
     if (!frame.tick) return;
@@ -316,14 +366,26 @@ void WorldChangeStep(PPCContext& ctx, uint8_t* base) {
 
 void MainStep(PPCContext& ctx, uint8_t* base) {
   if (gpu::Active()) NoteStep(base);
+  if (gpu::Active() && Frozen()) {
+    FrozenStep(ctx, base);
+    decided = false;
+    return;
+  }
   if (!Gating()) {
+    const SpeedStep speed_step = BeginSpeedStep(base);
     __imp__sub_827F73F0(ctx, base);
+    EndSpeedStep(base, speed_step);
     return;
   }
   Decide(base);
   in_step = frame.gate;
-  if (frame.tick) __imp__sub_827F73F0(ctx, base);
-  else ViewBlock(ctx, base);
+  if (frame.tick) {
+    const SpeedStep speed_step = BeginSpeedStep(base);
+    __imp__sub_827F73F0(ctx, base);
+    EndSpeedStep(base, speed_step);
+  } else {
+    ViewBlock(ctx, base);
+  }
   in_step = false;
   decided = false;
 }
