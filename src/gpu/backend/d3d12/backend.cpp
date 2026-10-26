@@ -2554,6 +2554,27 @@ bool ApplyConstants(const std::vector<uint8_t>& whole, const std::vector<uint8_t
 // The pipeline of DrawIndexed from the state words of its key (DrawStateWords,
 // pipeline_keys.h), shared with PrecompilePipeline, so a precompiled pipeline
 // is the one the draw would create. No PS for depth only.
+// REX_PIPELINE_TRACE=<file>: every draw pipeline is written there (state words,
+// shader sizes and hashes) right before and after its creation, flushed each
+// time, so a driver that takes the process down while compiling one (RADV
+// under Proton) leaves the culprit as the last "create" line.
+void TracePipeline(const char* what, const std::array<uint32_t, 21>& w, const std::vector<uint8_t>& vs,
+                   const std::vector<uint8_t>* ps) {
+  static FILE* file = [] {
+    const char* path = std::getenv("REX_PIPELINE_TRACE");
+    return path && *path ? std::fopen(path, "w") : nullptr;
+  }();
+  if (!file) return;
+  static std::mutex mutex;
+  std::lock_guard lock(mutex);
+  const uint64_t vs_hash = Fnv64(vs.data(), vs.size(), 0xCBF29CE484222325ull);
+  const uint64_t ps_hash = ps ? Fnv64(ps->data(), ps->size(), 0xCBF29CE484222325ull) : 0;
+  std::fprintf(file, "%s thread=%lu vs=%zu/%016llx ps=%zu/%016llx w=%s\n", what, GetCurrentThreadId(), vs.size(),
+               static_cast<unsigned long long>(vs_hash), ps ? ps->size() : size_t(0),
+               static_cast<unsigned long long>(ps_hash), fmt::format("{:08x}", fmt::join(w, ",")).c_str());
+  std::fflush(file);
+}
+
 HRESULT CreateDrawPipeline(ID3D12Device* device, ID3D12RootSignature* root, const std::array<uint32_t, 21>& w,
                            const std::vector<VertexElement>& elements, const std::vector<uint8_t>& vs,
                            const std::vector<uint8_t>* ps, Microsoft::WRL::ComPtr<ID3D12PipelineState>& out,
@@ -2626,7 +2647,9 @@ HRESULT CreateDrawPipeline(ID3D12Device* device, ID3D12RootSignature* root, cons
   d.RTVFormats[0] = has_color ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_UNKNOWN;
   d.DSVFormat = has_depth ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_UNKNOWN;
   d.SampleDesc.Count = w[8];
+  TracePipeline("create", w, vs, ps);
   const HRESULT hr = device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&out));
+  TracePipeline(FAILED(hr) ? "failed" : "created", w, vs, ps);
   if (FAILED(hr)) reason = "native-draw-pipeline";
   return hr;
 }
