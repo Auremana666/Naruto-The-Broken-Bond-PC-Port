@@ -2557,12 +2557,16 @@ bool ApplyConstants(const std::vector<uint8_t>& whole, const std::vector<uint8_t
 // REX_PIPELINE_TRACE=<file>: every draw pipeline is written there (state words,
 // shader sizes and hashes) right before and after its creation, flushed each
 // time, so a driver that takes the process down while compiling one (RADV
-// under Proton) leaves the culprit as the last "create" line.
+// under Proton) leaves the culprit as the last "create" line. Without it, a
+// run with REX_NATIVE_FRAME_DIR (Record Graphics Log) writes pipeline_trace.txt
+// there, so a tester only has to send that run's folder.
 void TracePipeline(const char* what, const std::array<uint32_t, 21>& w, const std::vector<uint8_t>& vs,
                    const std::vector<uint8_t>* ps) {
-  static FILE* file = [] {
-    const char* path = std::getenv("REX_PIPELINE_TRACE");
-    return path && *path ? std::fopen(path, "w") : nullptr;
+  static FILE* file = []() -> FILE* {
+    if (const char* path = std::getenv("REX_PIPELINE_TRACE"); path && *path) return std::fopen(path, "w");
+    if (const char* dir = std::getenv("REX_NATIVE_FRAME_DIR"); dir && *dir)
+      return std::fopen(fmt::format("{}/pipeline_trace.txt", dir).c_str(), "w");
+    return nullptr;
   }();
   if (!file) return;
   static std::mutex mutex;
