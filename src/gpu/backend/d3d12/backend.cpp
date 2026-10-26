@@ -2463,7 +2463,8 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fenceValue
     barrier(src, source.state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
     barrier(dst, dest.state, D3D12_RESOURCE_STATE_RESOLVE_DEST);
     // With the half-pixel offset gap (regions.h) to fill, by regions.
-    const auto copies = ResolveCopies(state_->render_mode.scale, {0, 0, dest.width, dest.height}, 0, 0);
+    const auto copies =
+        ResolveCopies(state_->render_mode.scale, {0, 0, dest.width, dest.height}, 0, 0, request.dest_height);
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> regions;
     if (copies.size() > 1 && SUCCEEDED(commands->QueryInterface(IID_PPV_ARGS(&regions)))) {
       for (const GapCopy& g : copies) {
@@ -2485,7 +2486,8 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fenceValue
     to.pResource = dst; to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     from.pResource = src; from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     // With the half-pixel offset gap (regions.h) filled.
-    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, region, host.dest_x, host.dest_y)) {
+    for (const GapCopy& g :
+         ResolveCopies(state_->render_mode.scale, region, host.dest_x, host.dest_y, request.dest_height)) {
       const D3D12_BOX box{g.source.left, g.source.top, 0, g.source.right, g.source.bottom, 1};
       commands->CopyTextureRegion(&to, g.dest_x, g.dest_y, 0, &from, &box);
     }

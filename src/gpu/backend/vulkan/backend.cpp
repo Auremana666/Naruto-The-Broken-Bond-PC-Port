@@ -1545,7 +1545,7 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fence, std
     Transition(commands, dest.Image(), VK_IMAGE_ASPECT_COLOR_BIT, dest.state, kCopyDest, true);
     // With the half-pixel offset gap (regions.h) filled.
     std::vector<VkImageResolve> regions;
-    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, {0, 0, dest.width, dest.height}, 0, 0)) {
+    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, {0, 0, dest.width, dest.height}, 0, 0, request.dest_height)) {
       VkImageResolve& region = regions.emplace_back();
       region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       region.srcOffset = {int32_t(g.source.left), int32_t(g.source.top), 0};
@@ -1560,7 +1560,7 @@ bool Backend::ResolveSurface(const ResolveRequest& request, uint64_t& fence, std
     Transition(commands, dest.Image(), VK_IMAGE_ASPECT_COLOR_BIT, dest.state, kCopyDest);
     // With the half-pixel offset gap (regions.h) filled.
     std::vector<VkImageCopy> regions;
-    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, box, host.dest_x, host.dest_y)) {
+    for (const GapCopy& g : ResolveCopies(state_->render_mode.scale, box, host.dest_x, host.dest_y, request.dest_height)) {
       VkImageCopy& region = regions.emplace_back();
       region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       region.srcOffset = {int32_t(g.source.left), int32_t(g.source.top), 0};

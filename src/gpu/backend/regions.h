@@ -87,15 +87,19 @@ inline uint32_t HalfPixelGap(float k) { return k > 1.0f ? uint32_t(std::ceil(k *
 // from the first covered column, the corner from the first covered pixel. No
 // copy reads a gap pixel and no two write the same texel, so they need no
 // order. One copy of the whole box at 1x or when the box is not larger than
-// its gap.
+// its gap. Destinations of one or two guest rows (the 128x1 ramp of the
+// title's last post-processing draw, which Neji's and Kiba's trap jutsus and
+// the flashbacks read) take one copy too: their drawn row is the first, and at
+// 1.5x the fill copied the undrawn second row over it, which turned the ramp
+// and the whole screen black .
 struct GapCopy {
   HostBox source;
   uint32_t dest_x = 0, dest_y = 0;
 };
 inline std::vector<GapCopy> ResolveCopies(const ResolutionScale& k, const HostBox& box, uint32_t dest_x,
-                                          uint32_t dest_y) {
+                                          uint32_t dest_y, uint32_t guest_height) {
   const uint32_t gx = HalfPixelGap(k.x), gy = HalfPixelGap(k.y);
-  if ((!gx && !gy) || box.right - box.left <= gx || box.bottom - box.top <= gy) return {{box, dest_x, dest_y}};
+  if ((!gx && !gy) || guest_height <= 2 || box.right - box.left <= gx || box.bottom - box.top <= gy) return {{box, dest_x, dest_y}};
   const uint32_t x = box.left + gx, y = box.top + gy;
   std::vector<GapCopy> copies{{{x, y, box.right, box.bottom}, dest_x + gx, dest_y + gy}};
   for (uint32_t i = 0; i < gy; ++i) copies.push_back({{x, y, box.right, y + 1}, dest_x + gx, dest_y + i});
