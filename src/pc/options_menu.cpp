@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <string_view>
 #include <utility>
 
 #include <imgui.h>
@@ -43,6 +44,31 @@ constexpr ImU32 kWhite = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kOutline = IM_COL32(6, 12, 38, 255);
 
 constexpr int kVisibleRows = 11;
+
+// The Fight Mode select grid as the game lays it out (5 columns, 6 rows), by setting value;
+// Naruto (first cell) cannot be replaced. kGridOff is the OFF button beside the grid.
+constexpr int kGridColumns = 5;
+constexpr int kGridRows = 6;
+constexpr int kGridOff = kGridColumns * kGridRows;
+constexpr std::array<const char*, kGridOff> kGridOrder = {
+    nullptr,          "sasuke",      "sakura",           "kakashi",       "haku",
+    "neji",           "kiba",        "shikamaru",        "choji",         "rock_lee",
+    "orochimaru",     "kabuto",      "jiraiya",          "tsunade",       "sarutobi",
+    "kisame",         "zabuza",      "itachi",           "temari",        "gaara",
+    "jirobo",         "tayuya",      "sakon",            "kidomaru",      "kimimaro",
+    "nine_tails_naruto", "curse_mark_sasuke", "green_naruto", "chunin_exam_sasuke", "anbu_itachi"};
+
+// The Hidden Characters & Skins rows: each Hokage's name and setting.
+constexpr std::array<std::pair<const char*, const char*>, 2> kHokageRows = {{
+    {"FIRST HOKAGE", hokage::kFirstSetting}, {"SECOND HOKAGE", hokage::kSecondSetting}}};
+
+// The grid cell of a setting value; kGridOff for "off" or an unknown value.
+int GridCellOf(const std::string& value) {
+  for (int cell = 0; cell < kGridOff; ++cell) {
+    if (kGridOrder[cell] && value == kGridOrder[cell]) return cell;
+  }
+  return kGridOff;
+}
 
 // Layout is designed for 1080p and scaled to the window height.
 float g_s = 1.0f;
@@ -627,8 +653,6 @@ void OptionsMenu::BuildPages() {
   Page hidden;
   hidden.title = "HIDDEN CHARACTERS & SKINS";
   hidden.tall = true;
-  static const std::array<std::pair<const char*, const char*>, 2> kHokageRows = {{
-      {"FIRST HOKAGE", hokage::kFirstSetting}, {"SECOND HOKAGE", hokage::kSecondSetting}}};
   for (size_t h = 0; h < kHokageRows.size(); ++h) {
     const char* setting = kHokageRows[h].second;
     Item item;
@@ -654,6 +678,7 @@ void OptionsMenu::BuildPages() {
         if (value == hokage::Roster()[c].value) picker.selected = static_cast<int>(c) + 1;
       }
       picker.scroll = 0;
+      grid_cell_ = GridCellOf(value);
       OpenPage(14);
     };
     hidden.items.push_back(item);
@@ -662,6 +687,7 @@ void OptionsMenu::BuildPages() {
   // 14: the character a Hokage replaces (the title names the Hokage), or OFF
   Page picker;
   picker.title = "REPLACES";
+  picker.grid = true;
   for (int c = -1; c < static_cast<int>(hokage::Roster().size()); ++c) {
     const std::string value = c < 0 ? "off" : hokage::Roster()[c].value;
     Item item;
@@ -1117,6 +1143,8 @@ void OptionsMenu::OnDraw(ImGuiIO& io) {
       ControllerFrame(io);
     } else if (pages_[page_].jutsu) {
       JutsuFrame(io);
+    } else if (pages_[page_].grid) {
+      GridFrame(io);
     } else {
       HandleInput(ReadInput(io));
       if (close_time_ < 0.0) HandleMouse(io);
@@ -1172,6 +1200,10 @@ void OptionsMenu::Draw(ImGuiIO& io) {
   }
   if (page.jutsu) {
     DrawJutsu(dl, io, alpha);
+    return;
+  }
+  if (page.grid) {
+    DrawGrid(dl, io, alpha);
     return;
   }
 
@@ -2063,4 +2095,164 @@ void OptionsMenu::DrawJutsu(ImDrawList* dl, ImGuiIO& io, float alpha) {
   }
   Prompt(dl, right, prompt_y, jutsu_row_ == kJutsuResetRow ? "CONFIRM" : "CHANGE", 'A', "ENTER",
          pad_prompts_, alpha);
+}
+
+namespace {
+// The item of the character grid page (14) for a cell: 0 is OFF, then the roster's order.
+int GridItemOf(int cell) {
+  if (cell < 0 || cell >= kGridOff || !kGridOrder[cell]) return 0;
+  const auto& roster = hokage::Roster();
+  for (size_t c = 0; c < roster.size(); ++c) {
+    if (std::string_view(roster[c].value) == kGridOrder[cell]) return static_cast<int>(c) + 1;
+  }
+  return 0;
+}
+}  // namespace
+
+void OptionsMenu::GridFrame(ImGuiIO& io) {
+  const Nav nav = ReadInput(io);
+  if (nav.back || nav.start || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    page_ = page_stack_.back();
+    page_stack_.pop_back();
+    page_time_ = time_;
+    select_time_ = time_;
+    return;
+  }
+  const int before = grid_cell_;
+  // Arrows move over the grid; right of the last column is OFF, Naruto's cell is skipped.
+  if (grid_cell_ == kGridOff) {
+    if (nav.left) grid_cell_ = kGridColumns - 1;
+  } else {
+    int column = grid_cell_ % kGridColumns, row = grid_cell_ / kGridColumns;
+    if (nav.right) {
+      if (column == kGridColumns - 1) grid_cell_ = kGridOff;
+      else ++column;
+    }
+    if (nav.left && column > 0) --column;
+    if (nav.up) row = (row + kGridRows - 1) % kGridRows;
+    if (nav.down) row = (row + 1) % kGridRows;
+    if (grid_cell_ != kGridOff) {
+      int cell = row * kGridColumns + column;
+      if (!kGridOrder[cell]) cell = nav.up ? kGridOff - kGridColumns : nav.down ? kGridColumns : nav.left ? before : 1;
+      grid_cell_ = cell;
+    }
+  }
+  const bool moved = io.MousePos.x != last_mouse_x_ || io.MousePos.y != last_mouse_y_;
+  last_mouse_x_ = io.MousePos.x;
+  last_mouse_y_ = io.MousePos.y;
+  if (grid_hover_ >= 0 && moved) grid_cell_ = grid_hover_;
+  if (grid_cell_ != before) select_time_ = time_;
+
+  const bool click = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && grid_hover_ >= 0;
+  if (nav.confirm || click) {
+    if (click) grid_cell_ = grid_hover_;
+    Page& page = pages_[page_];
+    page.selected = grid_cell_ == kGridOff ? 0 : GridItemOf(grid_cell_);
+    Activate(page.items[page.selected], +1);
+  }
+}
+
+void OptionsMenu::DrawGrid(ImDrawList* dl, ImGuiIO& io, float alpha) {
+  const float w = io.DisplaySize.x;
+  const float h = io.DisplaySize.y;
+  Page& page = pages_[page_];
+  const float page_t = static_cast<float>(time_ - page_time_);
+  const float x0 = S(150.0f);
+  const float grid_y = S(220.0f) + S(96.0f);
+  const float cell = S(100.0f), pitch = S(108.0f);
+  const auto* atlas = pictures_[2].get();
+  const std::string mine = GetSetting(kHokageRows[picker_hokage_].second);
+  const std::string other = GetSetting(kHokageRows[1 - picker_hokage_].second);
+  grid_hover_ = -1;
+
+  for (int index = 0; index < kGridOff; ++index) {
+    const int column = index % kGridColumns, row = index / kGridColumns;
+    // Cells pop in one after another, like the rows of the other pages.
+    const float t = EaseOut((page_t - (row + column) * 0.02f) / 0.22f);
+    const float a = alpha * t;
+    const bool selected = index == grid_cell_;
+    const bool locked = !kGridOrder[index];
+    const float grow = selected ? EaseOut(static_cast<float>((time_ - select_time_) / 0.12)) : 0.0f;
+    const float size = cell * (1.0f + 0.10f * grow);
+    const float cx = x0 + column * pitch + cell * 0.5f, cy = grid_y + row * pitch + cell * 0.5f;
+    const ImVec2 p0(cx - size * 0.5f, cy - size * 0.5f), p1(cx + size * 0.5f, cy + size * 0.5f);
+    if (!locked && io.MousePos.x >= cx - cell * 0.5f && io.MousePos.x < cx + cell * 0.5f &&
+        io.MousePos.y >= cy - cell * 0.5f && io.MousePos.y < cy + cell * 0.5f) {
+      grid_hover_ = index;
+    }
+
+    // The game's white rounded frame, the portrait inside.
+    const float frame = selected ? S(8) : S(4);
+    dl->AddRectFilled(ImVec2(p0.x - frame, p0.y - frame), ImVec2(p1.x + frame, p1.y + frame),
+                      WithAlpha(selected ? kOrange : IM_COL32(235, 240, 248, 255), a), S(10));
+    if (atlas) {
+      const ImVec2 uv0(column / float(kGridColumns), row / float(kGridRows));
+      const ImVec2 uv1((column + 1) / float(kGridColumns), (row + 1) / float(kGridRows));
+      dl->AddImageRounded(reinterpret_cast<ImTextureID>(atlas), p0, p1, uv0, uv1,
+                          WithAlpha(locked ? IM_COL32(110, 110, 110, 255) : kWhite, a), S(5));
+    } else {
+      dl->AddRectFilled(p0, p1, WithAlpha(IM_COL32(60, 70, 100, 255), a), S(5));
+    }
+    if (locked) {
+      // Naruto stays himself: crossed out.
+      const ImU32 red = WithAlpha(IM_COL32(220, 30, 30, 255), a);
+      const float m = size * 0.18f;
+      dl->AddLine(ImVec2(p0.x + m, p0.y + m), ImVec2(p1.x - m, p1.y - m), red, S(9));
+      dl->AddLine(ImVec2(p1.x - m, p0.y + m), ImVec2(p0.x + m, p1.y - m), red, S(9));
+      continue;
+    }
+    // Tags: this Hokage's pick, and the other Hokage's.
+    const char* tag = nullptr;
+    ImU32 tag_color = kOrange;
+    if (mine == kGridOrder[index]) {
+      tag = picker_hokage_ == 0 ? "1ST" : "2ND";
+    } else if (other == kGridOrder[index]) {
+      tag = picker_hokage_ == 0 ? "2ND" : "1ST";
+      tag_color = kBlue;
+    }
+    if (tag) OutlinedText(dl, ImVec2(p0.x + S(4), p1.y - S(30)), S(28), tag_color, tag, a);
+  }
+
+  // Right of the grid: the Hokage, the character under the cursor and the OFF button.
+  const float px = x0 + kGridColumns * pitch + S(60.0f);
+  float py = grid_y;
+  if (const auto& portrait = pictures_[picker_hokage_]) {
+    const float pic = S(200.0f);
+    dl->AddImage(reinterpret_cast<ImTextureID>(portrait.get()), ImVec2(px, py), ImVec2(px + pic, py + pic),
+                 ImVec2(0, 0), ImVec2(1, 1), WithAlpha(kWhite, alpha));
+    py += pic + S(30.0f);
+  }
+  std::string name = "OFF", status = "FIGHT MODE KEEPS EVERY CHARACTER";
+  if (grid_cell_ != kGridOff) {
+    const int item = GridItemOf(grid_cell_);
+    name = item ? page.items[item].label : "";
+    status = mine == kGridOrder[grid_cell_]    ? "SELECTED"
+             : other == kGridOrder[grid_cell_] ? std::string("TAKEN BY ") + kHokageRows[1 - picker_hokage_].first
+                                               : "PRESS TO REPLACE";
+  } else if (mine == "off") {
+    status = "SELECTED";
+  }
+  OutlinedText(dl, ImVec2(px, py), S(48.0f), kWhite, name, alpha, 3.0f);
+  OutlinedText(dl, ImVec2(px, py + S(60.0f)), S(30.0f), kBlue, status, alpha);
+
+  // OFF, the cell right of the grid's last column.
+  const float off_y = grid_y + (kGridRows - 1) * pitch;
+  const bool off_selected = grid_cell_ == kGridOff;
+  const ImVec2 off_size = TextSize(S(44.0f), "OFF");
+  if (off_selected) {
+    const float bob = std::sin(static_cast<float>(time_) * 7.0f) * S(4.0f);
+    Arrow(dl, ImVec2(px + S(10.0f) + bob, off_y + cell * 0.5f), S(26.0f), kOrange, alpha);
+  }
+  OutlinedText(dl, ImVec2(px + S(40.0f), off_y + (cell - S(44.0f)) * 0.5f), S(44.0f),
+               off_selected ? kOrange : kBlue, "OFF", alpha);
+  if (io.MousePos.x >= px && io.MousePos.x < px + S(40.0f) + off_size.x + S(20.0f) && io.MousePos.y >= off_y &&
+      io.MousePos.y < off_y + cell) {
+    grid_hover_ = kGridOff;
+  }
+
+  // Button prompts, bottom right.
+  const float prompt_y = h - S(80.0f);
+  float right = w - S(110.0f);
+  right = Prompt(dl, right, prompt_y, "BACK", 'B', "ESC", pad_prompts_, alpha);
+  Prompt(dl, right, prompt_y, "SELECT", 'A', "ENTER", pad_prompts_, alpha);
 }

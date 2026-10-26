@@ -112,6 +112,7 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
     bool controller = false;  // drawn as a controller picture instead of rows
     bool jutsu = false;       // the Auto Jutsu page: keyboard / controller 1 / controller 2 grid
     bool tall = false;        // tall rows with a picture each (Hidden Characters & Skins)
+    bool grid = false;        // the Fight Mode select grid (the character a Hokage replaces)
   };
 
   struct Nav {
@@ -137,6 +138,10 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
   void JutsuFrame(ImGuiIO& io);
   void DrawJutsu(ImDrawList* dl, ImGuiIO& io, float alpha);
   void ActivateJutsuCell();
+
+  // The character grid page (a Hokage's replacement).
+  void GridFrame(ImGuiIO& io);
+  void DrawGrid(ImDrawList* dl, ImGuiIO& io, float alpha);
 
   int ChoiceIndex(const Item& item) const;
   std::string ValueText(const Item& item) const;
@@ -193,10 +198,12 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
   bool jutsu_pad_ready_ = false;      // that controller's buttons were all released first
   double jutsu_reset_time_ = -10.0;   // when Reset Auto Jutsu was last pressed
 
-  // Hidden Characters & Skins: the Hokage portraits (resources 107 and 108, optional), and the
-  // Hokage whose replacement the character list (page 14) is picking.
-  std::array<std::unique_ptr<rex::ui::ImmediateTexture>, 2> pictures_;
+  // Hidden Characters & Skins: the Hokage portraits (resources 107 and 108) and the select grid
+  // (109), all optional, and the Hokage whose replacement the character grid (page 14) is picking.
+  std::array<std::unique_ptr<rex::ui::ImmediateTexture>, 3> pictures_;
   size_t picker_hokage_ = 0;
+  int grid_cell_ = 1;      // the cursor on page 14: a grid cell, or kGridOff
+  int grid_hover_ = -1;    // the cell under the mouse
 
   // Prompts show controller buttons after controller input, key names otherwise.
   bool pad_prompts_ = false;
