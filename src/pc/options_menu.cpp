@@ -625,7 +625,7 @@ void OptionsMenu::BuildPages() {
   }
   {
     Item hidden = submenu("HIDDEN CHARACTERS & SKINS", 13);
-    hidden.help = "Play the First and the Second Hokage in Fight Mode, in place of a character you pick.";
+    hidden.help = "Fight Mode characters can wear the First or the Second Hokage's skin.";
     hidden.summary = []() {
       const bool on = GetSetting(hokage::kFirstSetting) != "off" || GetSetting(hokage::kSecondSetting) != "off";
       return std::string(on ? "ON" : "OFF");
@@ -687,19 +687,19 @@ void OptionsMenu::BuildPages() {
     item.kind = Kind::kAction;
     item.label = kHokageRows[h].first;
     item.picture = static_cast<int>(h);
-    item.help = "Pick the Fight Mode character he replaces (not Naruto). The fighter changes from "
-                "the next fight, the name after a restart.";
+    item.help = "Pick the Fight Mode character who wears his skin (not Naruto). Only a skin: the "
+                "character keeps their own moves. The name changes after a restart.";
     item.summary = [setting]() {
       const std::string value = GetSetting(setting);
       for (const auto& character : hokage::Roster()) {
-        if (value == character.value) return std::string("REPLACES ") + character.name;
+        if (value == character.value) return std::string("SKIN ON ") + character.name;
       }
       return std::string("OFF");
     };
     item.action = [this, h]() {
       picker_hokage_ = h;
       Page& picker = pages_[14];
-      picker.title = std::string(kHokageRows[h].first) + " REPLACES";
+      picker.title = std::string(kHokageRows[h].first) + " SKIN";
       const std::string value = GetSetting(kHokageRows[h].second);
       picker.selected = 0;
       for (size_t c = 0; c < hokage::Roster().size(); ++c) {
@@ -714,7 +714,7 @@ void OptionsMenu::BuildPages() {
 
   // 14: the character a Hokage replaces (the title names the Hokage), or OFF
   Page picker;
-  picker.title = "REPLACES";
+  picker.title = "SKIN";
   picker.grid = true;
   for (int c = -1; c < static_cast<int>(hokage::Roster().size()); ++c) {
     const std::string value = c < 0 ? "off" : hokage::Roster()[c].value;
@@ -2256,7 +2256,7 @@ void OptionsMenu::DrawGrid(ImDrawList* dl, ImGuiIO& io, float alpha) {
     name = item ? page.items[item].label : "";
     status = mine == kGridOrder[grid_cell_]    ? "SELECTED"
              : other == kGridOrder[grid_cell_] ? std::string("TAKEN BY ") + kHokageRows[1 - picker_hokage_].first
-                                               : "PRESS TO REPLACE";
+                                               : "PRESS TO PICK";
   } else if (mine == "off") {
     status = "SELECTED";
   }
@@ -2277,6 +2277,10 @@ void OptionsMenu::DrawGrid(ImDrawList* dl, ImGuiIO& io, float alpha) {
       io.MousePos.y < off_y + cell) {
     grid_hover_ = kGridOff;
   }
+
+  // The note at the bottom: a skin, not a fighter of his own.
+  OutlinedText(dl, ImVec2(x0, h - S(110.0f)), S(28.0f), kWhite,
+               "ONLY A SKIN: THE CHARACTER KEEPS THEIR OWN MOVES, NOT A FULL HOKAGE FIGHTER.", alpha * 0.9f);
 
   // Button prompts, bottom right.
   const float prompt_y = h - S(80.0f);
