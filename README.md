@@ -33,6 +33,50 @@ settings (`naruto.toml`) next to the exe, and Windows blocks that there.
 
 The first start can take a moment while Windows scans the new program.
 
+**Steam Deck / Linux:** add `Naruto The Broken Bond PC.exe` to Steam as a non-Steam game and run
+it with Proton (see [Steam Deck](#steam-deck)).
+
+## What's new in v2.5
+
+![Free camera](docs/images/free-camera.jpg)
+
+- **Playable on Steam Deck.** The black screen under Proton is fixed (the game's shaders now load
+  there), and the game no longer closes after the title screen: when the Deck's graphics driver
+  crashes on a shader, the game skips that shader from the next start on. Tested by
+  **tylerl567** on a Steam Deck. See [Steam Deck](#steam-deck).
+- **Free camera** (PC Options > Cheats, key **6** by default): the game freezes and you fly the
+  camera anywhere in the level. W A S D move, Space / Ctrl go up and down, Shift goes faster,
+  the mouse or the arrow keys look; on a controller the sticks and triggers. Press 6 again to
+  go back.
+- **Weather** (PC Options > Cheats): one weather everywhere, fights included: Day, Night,
+  Morning, Overcast, Evening or Sunset. It changes right away while you walk around, and GAME
+  brings back the game's own.
+
+  ![Weather: Sunset](docs/images/weather-sunset.jpg)
+- **First and Second Hokage skins** (PC Options > Cheats > Hidden Characters & Skins): pick a
+  Fight Mode character on the game's own select grid and they wear the First or the Second
+  Hokage's look. **They are only skins:** the character keeps their own moves, jutsus and
+  voice, and the skins look quite glitchy in places (they were made for one story fight, not
+  for every move set). Naruto can't wear them.
+
+  ![Hokage skins](docs/images/hokage-skins.jpg)
+- **Speed up** (hold **Numpad +**): the whole game runs 2 to 8 times faster while you hold it,
+  handy for the cutscenes you can't skip. The speed and the key are in PC Options > Cheats.
+- **Graphics options that apply without a restart:** brightness, upscaling (CAS / FSR now really
+  apply), edge smoothing (FXAA) and vertical sync change right away.
+- **Neji's and Kiba's trap jutsus fixed:** with the render resolution at 1.5x the screen went
+  black during the jutsus that find traps (and in some flashbacks). They show correctly now.
+
+  ![Neji's trap jutsu](docs/images/neji-trap-jutsu.jpg)
+- **New default settings for lower-end PCs:** 1080p (1.5x), 60 FPS, 2X anti-aliasing,
+  transparency anti-aliasing, strong FXAA, mouse camera on and the aspect ratio picked from your
+  screen. Change them any time in PC Options.
+- **Graphics log for testers:** Record Graphics Log (PC Options > Debug) also writes
+  `pipeline_trace.txt`, which shows the exact shader a crash happened on.
+
+**Coming from v2.0?** Copy your `hdd` folder over to keep your saves. Your old `naruto.toml`
+still works; delete it if you want the new default settings.
+
 ## What's new in v2
 
 ![Gameplay](docs/images/gameplay-16-9.jpg)
@@ -91,6 +135,25 @@ a limit that settings can't remove. It won't get much better than this on low-en
 If you get stutters, turn on **PC Options > Debug > Record Graphics Log**, play, and share the
 newest folder in `pipeline-runs`: it shows exactly where the time goes.
 
+## Steam Deck
+
+Version 2.5 runs on the Steam Deck (SteamOS, Proton). Thanks to **tylerl567** for testing it on
+his Deck and sending the logs that found both problems.
+
+1. Copy the game folder to the Deck and add `Naruto The Broken Bond PC.exe` to Steam as a
+   non-Steam game (Desktop Mode).
+2. In its Properties > Compatibility, force a recent Proton version (tested with Proton 11).
+3. Put your ISO in the `assets` folder and start the game.
+
+**If the game closes during the first starts, just start it again.** The Deck's graphics driver
+crashes on a few of the game's shaders; each time, the game remembers that shader in
+`pipeline-guard.txt` and skips it from then on. After a few starts it stays open. A skipped shader
+can leave a small object undrawn.
+
+The frame rate holds 60 FPS in most places and drops to about 34 FPS in some busy areas. For
+the smoothest play on the Deck, set PC Options > Graphics to 1x render resolution and
+anti-aliasing OFF.
+
 ## Features
 
 | | |
@@ -111,8 +174,8 @@ newest folder in `pipeline-runs`: it shows exactly where the time goes.
   - **Controller layout:** separate layouts for **Controller 1** and **Controller 2**. Pick a button
     on the drawn controller and press the button it should become, or make it a toggle or turbo.
   - **Audio** and **Game:** mute, language, intro videos on/off, PC title screen on/off.
-  - **Cheats:** unlock every character, unlock every arena (your save is not changed), and
-    **Auto Jutsu**.
+  - **Cheats:** unlock every character, unlock every arena (your save is not changed),
+    **weather**, **free camera**, **speed up**, **First / Second Hokage skins** and **Auto Jutsu**.
   - **Shortcut Keys:** rebind the shortcuts and jump straight to any page.
   - **Debug:** log files, Record Graphics Log, Skip Unready Graphics.
 - **Auto Jutsu:** one button does your character's jutsu for you.
@@ -149,6 +212,8 @@ newest folder in `pipeline-runs`: it shows exactly where the time goes.
 |---|---|
 | PC Options | F1 (or Back + Start) |
 | FPS counter | F2 |
+| Free camera on / off | 6 |
+| Speed up (hold) | Numpad + |
 | Log files on / off | Ctrl + F12 |
 
 All keys can be changed in **PC Options > Controls > Key Bindings** and **PC Options > Shortcut Keys**.
@@ -165,6 +230,10 @@ keyboard back and restart to see it again.
 ## Known issues
 
 - Laptops and built-in graphics: see [Performance](#performance).
+- The First and Second Hokage skins are only skins (the character keeps their own moves) and look
+  glitchy in places. The name above the health bar changes after a restart.
+- Steam Deck: the first starts can close the game (start it again, see [Steam Deck](#steam-deck)),
+  and some busy areas drop to about 34 FPS.
 - Some virtual controller drivers (DS4Windows / ViGEm, Rainway) make a controller show as
   "connected" even when it's unplugged.
 
@@ -196,12 +265,14 @@ you can send a few Ryō my way on Ko-fi. Thank you, believe it!
 | Native Direct3D 12 renderer: draws, shaders, textures, frame interpolation, frame rate, resolution, MSAA, FXAA, CAS / FSR, graphics cache | jorjbarbosa (first written for [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp)) |
 | PC Options menu, key and controller remapping (toggle / turbo), keyboard as player 1 or 2, Auto Jutsu, unlocks, intro skip, PC title screen, Save Backup Tool | this port (first made for v1, moved to v2) |
 | Field of view, ultrawide that widens the view, mouse camera | this port |
+| v2.5: weather, free camera, speed up, Hokage skins, live graphics options, Steam Deck fixes (shaders under Proton, crash guard), trap jutsu fix | this port |
 | Menu overlay on the native renderer, Skip Unready Graphics option, Anti-aliasing OFF fix, render-thread speedups, performance log, window close fixes | this port, changes inside his renderer |
 | v1 recompilation and its emulated graphics | this port, on the ReXGlue SDK with patches from naruto-rise-recomp |
 
 ## Credits
 
 - **Auremana666:** project lead, testing, title screen and trailer.
+- **tylerl567:** Steam Deck tester. His Deck logs made v2.5 playable on the Steam Deck.
 - **Claude AI (Anthropic):** the code of this port's PC features and the v1 recompilation.
 - [jorjbarbosa](https://github.com/jorjbarbosa): the
   [Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp), whose recompilation,

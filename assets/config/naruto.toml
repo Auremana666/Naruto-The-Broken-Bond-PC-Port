@@ -8,15 +8,16 @@ vsync = false
 d3d12_allow_variable_refresh_rate_and_tearing = true
 video_mode_refresh_rate = 60.0
 
-# Graphics (PC Options > Graphics; they apply after a restart)
+# Graphics (PC Options > Graphics; brightness, upscaling, edge smoothing and vsync apply right away,
+# the rest after a restart)
 # Frame rate: 30 is the game's own; above 30 extra frames are drawn between the game's.
 frame_rate = 60
 # Internal resolution: 1 = 720p like the Xbox, 1.5 = 1080p, 2 = 1440p, 3 = 4K.
 internal_resolution_scale = 1.5
 # MSAA: 1 = off, 0 = the game's own 4X, 2, 4 or 8.
-msaa_samples = 0
-transparency_antialiasing = false
-swap_post_effect = "fxaa"
+msaa_samples = 2
+transparency_antialiasing = true
+swap_post_effect = "fxaa_extreme"
 upscaling = "bilinear"
 anisotropic_override = 5
 brightness = 0.5
@@ -34,7 +35,7 @@ input_backend = "sdl"
 mnk_mode = true
 # Player the keyboard controls when a controller is connected: auto (shares player 1), 1 or 2
 keyboard_player = "auto"
-mnk_mouse = false
+mnk_mouse = true
 mnk_sensitivity = 1.0
 keybind_lstick_up = "W"
 keybind_lstick_down = "S"
@@ -77,6 +78,15 @@ bind_fps_counter = "F2"
 unlock_all_characters = false
 unlock_all_arenas = false
 weather = "game"
+# Speed up: hold this key to run the game faster (2 to 8 times), for cutscenes you cannot skip.
+bind_speed_up = "NumpadPlus"
+speed_up_factor = "4"
+# Free camera: this key freezes the game and flies the camera around.
+bind_free_camera = "6"
+# Hidden Characters & Skins: the Fight Mode character who wears the First / Second Hokage's
+# skin (only a skin: the character keeps their own moves), or off.
+first_hokage = "off"
+second_hokage = "off"
 
 # Auto Jutsu (PC Options > Cheats > Auto Jutsu): one button performs the fighter's jutsu 1-4, in
 # the order its jutsu menu shows them. Hold to charge, let go to release. Keyboard:
@@ -106,7 +116,7 @@ record_pipelines = false
 async_shaders = true
 
 # Aspect ratio: 16:9, 21:9, 32:9 or auto (PC Options > Display).
-aspect_ratio = "16:9"
+aspect_ratio = "auto"
 
 # Field of view: 1 = the game's own, up to 1.4 (PC Options > Display).
 field_of_view = 1.0
