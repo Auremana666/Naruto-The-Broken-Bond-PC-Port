@@ -6,13 +6,16 @@
 #pragma once
 
 #include <chrono>
+#include <array>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/immediate_drawer.h>
 
 struct ImFont;
 struct ImDrawList;
@@ -95,6 +98,7 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
     bool exit = false;                // the Exit Game entry, set apart at the bottom
     std::string mode_cvar;            // kKeyBind: press mode setting (left / right change it)
     std::function<std::string()> summary;  // kSubmenu: text shown in the value column
+    int picture = -1;                 // index into pictures_, drawn left of the label
   };
 
   struct Page {
@@ -104,6 +108,7 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
     int scroll = 0;
     bool controller = false;  // drawn as a controller picture instead of rows
     bool jutsu = false;       // the Auto Jutsu page: keyboard / controller 1 / controller 2 grid
+    bool tall = false;        // tall rows with a picture each (Hidden Characters & Skins)
   };
 
   struct Nav {
@@ -184,6 +189,11 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
   bool jutsu_pad_capturing_ = false;  // waiting for a button on controller jutsu_col_
   bool jutsu_pad_ready_ = false;      // that controller's buttons were all released first
   double jutsu_reset_time_ = -10.0;   // when Reset Auto Jutsu was last pressed
+
+  // Hidden Characters & Skins: the Hokage portraits (resources 107 and 108, optional), and the
+  // Hokage whose replacement the character list (page 14) is picking.
+  std::array<std::unique_ptr<rex::ui::ImmediateTexture>, 2> pictures_;
+  size_t picker_hokage_ = 0;
 
   // Prompts show controller buttons after controller input, key names otherwise.
   bool pad_prompts_ = false;

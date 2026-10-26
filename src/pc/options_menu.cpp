@@ -12,9 +12,21 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/ui/imgui_drawer.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/virtual_key.h>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include "stb_image.h"
+
+#include "hokage_fighters.h"
 #include "imgui_key_map.inc"
 #include "input_layout.h"
 #include "input_layout_core.h"
@@ -553,12 +565,15 @@ void OptionsMenu::BuildPages() {
                                  {"EVENING", "evening"},
                                  {"SUNSET", "sunset"}},
                                 "One weather everywhere, fights included. Changes right away. GAME brings back the normal one."));
-  cheats.items.push_back(choice("YOUNG ITACHI SLOT", "young_itachi_slot",
-                                {{"YOUNG ITACHI", "itachi"}, {"FIRST HOKAGE", "first"}, {"SECOND HOKAGE", "second"}},
-                                "Fight Mode: a Hokage takes Young Itachi's place from the next fight, his name after a restart."));
-  cheats.items.push_back(choice("BLACK SASUKE SLOT", "black_sasuke_slot",
-                                {{"BLACK SASUKE", "sasuke"}, {"FIRST HOKAGE", "first"}, {"SECOND HOKAGE", "second"}},
-                                "Fight Mode: a Hokage takes Black Sasuke's place from the next fight, his name after a restart."));
+  {
+    Item hidden = submenu("HIDDEN CHARACTERS & SKINS", 13);
+    hidden.help = "Play the First and the Second Hokage in Fight Mode, in place of a character you pick.";
+    hidden.summary = []() {
+      const bool on = GetSetting(hokage::kFirstSetting) != "off" || GetSetting(hokage::kSecondSetting) != "off";
+      return std::string(on ? "ON" : "OFF");
+    };
+    cheats.items.push_back(hidden);
+  }
   {
     Item auto_jutsu = submenu("AUTO JUTSU", 10);
     auto_jutsu.help = "One button does your character's jutsu, on the keyboard and controllers.";
@@ -604,8 +619,91 @@ void OptionsMenu::BuildPages() {
                                "Fewer stutters on slow graphics chips: an object whose graphics are still being "
                                "prepared is skipped for a moment instead of freezing the game."));
 
-  pages_ = {root,      display, graphics, controls, keys,  audio,
-            game,      pad,     shortcuts, cheats,  jutsu, pads, debug};
+  // 13: hidden characters, one row with a portrait per Hokage
+  Page hidden;
+  hidden.title = "HIDDEN CHARACTERS & SKINS";
+  hidden.tall = true;
+  static const std::array<std::pair<const char*, const char*>, 2> kHokageRows = {{
+      {"FIRST HOKAGE", hokage::kFirstSetting}, {"SECOND HOKAGE", hokage::kSecondSetting}}};
+  for (size_t h = 0; h < kHokageRows.size(); ++h) {
+    const char* setting = kHokageRows[h].second;
+    Item item;
+    item.kind = Kind::kAction;
+    item.label = kHokageRows[h].first;
+    item.picture = static_cast<int>(h);
+    item.help = "Pick the Fight Mode character he replaces (not Naruto). The fighter changes from "
+                "the next fight, the name after a restart.";
+    item.summary = [setting]() {
+      const std::string value = GetSetting(setting);
+      for (const auto& character : hokage::Roster()) {
+        if (value == character.value) return std::string("REPLACES ") + character.name;
+      }
+      return std::string("OFF");
+    };
+    item.action = [this, h]() {
+      picker_hokage_ = h;
+      Page& picker = pages_[14];
+      picker.title = std::string(kHokageRows[h].first) + " REPLACES";
+      const std::string value = GetSetting(kHokageRows[h].second);
+      picker.selected = 0;
+      for (size_t c = 0; c < hokage::Roster().size(); ++c) {
+        if (value == hokage::Roster()[c].value) picker.selected = static_cast<int>(c) + 1;
+      }
+      picker.scroll = 0;
+      OpenPage(14);
+    };
+    hidden.items.push_back(item);
+  }
+
+  // 14: the character a Hokage replaces (the title names the Hokage), or OFF
+  Page picker;
+  picker.title = "REPLACES";
+  for (int c = -1; c < static_cast<int>(hokage::Roster().size()); ++c) {
+    const std::string value = c < 0 ? "off" : hokage::Roster()[c].value;
+    Item item;
+    item.kind = Kind::kAction;
+    item.label = c < 0 ? "OFF" : hokage::Roster()[c].name;
+    item.help = c < 0 ? "Fight Mode keeps every character as it is." : "This character's place in Fight Mode.";
+    item.summary = [this, value]() {
+      const char* mine = kHokageRows[picker_hokage_].second;
+      const char* other = kHokageRows[1 - picker_hokage_].second;
+      if (GetSetting(mine) == value) return std::string("SELECTED");
+      if (value != "off" && GetSetting(other) == value) return std::string(kHokageRows[1 - picker_hokage_].first);
+      return std::string();
+    };
+    item.action = [this, value]() {
+      const char* mine = kHokageRows[picker_hokage_].second;
+      const char* other = kHokageRows[1 - picker_hokage_].second;
+      Set(mine, value);
+      // One Hokage per character: the other one gives the place up.
+      if (value != "off" && GetSetting(other) == value) Set(other, "off");
+      page_ = page_stack_.back();
+      page_stack_.pop_back();
+      page_time_ = time_;
+      select_time_ = time_;
+    };
+    picker.items.push_back(item);
+  }
+
+  pages_ = {root,      display, graphics, controls, keys,  audio,  game,  pad,
+            shortcuts, cheats,  jutsu,    pads,     debug, hidden, picker};
+
+  // The Hokage portraits are optional resources (assets/portraits/, not in the public source).
+  HMODULE module = GetModuleHandleW(nullptr);
+  auto* immediate = imgui_drawer() ? imgui_drawer()->immediate_drawer() : nullptr;
+  for (size_t h = 0; h < pictures_.size() && immediate; ++h) {
+    HRSRC info = FindResourceW(module, MAKEINTRESOURCEW(107 + static_cast<int>(h)), MAKEINTRESOURCEW(10));
+    HGLOBAL handle = info ? LoadResource(module, info) : nullptr;
+    const auto* data = handle ? static_cast<const stbi_uc*>(LockResource(handle)) : nullptr;
+    if (!data) continue;
+    int w = 0, hgt = 0, channels = 0;
+    stbi_uc* pixels = stbi_load_from_memory(data, static_cast<int>(SizeofResource(module, info)), &w, &hgt,
+                                            &channels, 4);
+    if (!pixels) continue;
+    pictures_[h] = immediate->CreateTexture(static_cast<uint32_t>(w), static_cast<uint32_t>(hgt),
+                                            rex::ui::ImmediateTextureFilter::kLinear, false, pixels);
+    stbi_image_free(pixels);
+  }
 }
 
 void OptionsMenu::JumpTo(int page) {
@@ -1078,7 +1176,7 @@ void OptionsMenu::Draw(ImGuiIO& io) {
   if (page.selected < page.scroll) page.scroll = page.selected;
   if (page.selected >= page.scroll + kVisibleRows) page.scroll = page.selected - kVisibleRows + 1;
   const float row_y0 = title_y + S(96.0f);
-  const float row_h = S(56.0f);
+  const float row_h = page.tall ? S(150.0f) : S(56.0f);
   const float label_x = x0 + S(56.0f);
   const float value_x = x0 + S(760.0f);
   const float item_size = S(44.0f);
@@ -1115,7 +1213,18 @@ void OptionsMenu::Draw(ImGuiIO& io) {
     if (item.exit && exit_armed_ && selected) {
       label = "EXIT GAME?  PRESS AGAIN TO CONFIRM";
     }
-    OutlinedText(dl, ImVec2(label_x + slide, text_y), size, color, label, a);
+    float text_x = label_x + slide;
+    if (item.picture >= 0 && item.picture < static_cast<int>(pictures_.size()) &&
+        pictures_[item.picture]) {
+      // The portrait, a little larger while selected.
+      const float pic = S(130.0f) * (1.0f + 0.06f * grow);
+      const float py = y + (row_h - pic) * 0.5f;
+      dl->AddImage(reinterpret_cast<ImTextureID>(pictures_[item.picture].get()), ImVec2(text_x, py),
+                   ImVec2(text_x + pic, py + pic), ImVec2(0, 0), ImVec2(1, 1),
+                   WithAlpha(IM_COL32(255, 255, 255, 255), a));
+      text_x += S(160.0f);
+    }
+    OutlinedText(dl, ImVec2(text_x, text_y), size, color, label, a);
 
     // Value column.
     const float value_size = S(40.0f);
