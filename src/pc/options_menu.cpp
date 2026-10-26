@@ -27,6 +27,7 @@
 #define STBI_ONLY_PNG
 #include "stb_image.h"
 
+#include "free_camera.h"
 #include "hokage_fighters.h"
 #include "imgui_key_map.inc"
 #include "input_layout.h"
@@ -591,10 +592,37 @@ void OptionsMenu::BuildPages() {
                                  {"EVENING", "evening"},
                                  {"SUNSET", "sunset"}},
                                 "One weather everywhere, fights included. Changes right away. GAME brings back the normal one."));
+  {
+    Item camera;
+    camera.kind = Kind::kAction;
+    camera.label = "FREE CAMERA";
+    camera.help = "Freezes the game and flies the camera: WASD, Space / Ctrl, Shift, mouse or arrows.";
+    camera.summary = []() { return std::string(FreeCameraOn() ? "ON" : "OFF"); };
+    camera.action = []() { ToggleFreeCamera(); };
+    cheats.items.push_back(camera);
+    Item key;
+    key.kind = Kind::kKeyBind;
+    key.label = "FREE CAMERA KEY";
+    key.cvar = "bind_free_camera";
+    key.default_keys = "6";
+    key.single_key = true;
+    key.help = "Turns the free camera on and off during the game.";
+    cheats.items.push_back(key);
+  }
   cheats.items.push_back(choice("SPEED UP", "speed_up_factor",
                                 {{"2X", "2"}, {"3X", "3"}, {"4X", "4"}, {"6X", "6"}, {"8X", "8"}},
-                                "How much faster the game runs while the SPEED UP key (Numpad +) is held. Shortcut "
-                                "Keys changes the key. Vertical sync limits it."));
+                                "How much faster the game runs while the SPEED UP key is held. Vertical sync limits "
+                                "it."));
+  {
+    Item key;
+    key.kind = Kind::kKeyBind;
+    key.label = "SPEED UP KEY";
+    key.cvar = "bind_speed_up";
+    key.default_keys = "NumpadPlus";
+    key.single_key = true;
+    key.help = "Hold it to run the game faster, for cutscenes you cannot skip.";
+    cheats.items.push_back(key);
+  }
   {
     Item hidden = submenu("HIDDEN CHARACTERS & SKINS", 13);
     hidden.help = "Play the First and the Second Hokage in Fight Mode, in place of a character you pick.";

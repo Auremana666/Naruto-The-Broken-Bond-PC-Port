@@ -1,4 +1,4 @@
-// Free camera (PC Options > Shortcut Keys > FREE CAMERA, F6): the world stands still and the
+// Free camera (PC Options > Cheats > FREE CAMERA, key 6): the world stands still and the
 // camera flies around it. See free_camera.cpp.
 
 #pragma once
