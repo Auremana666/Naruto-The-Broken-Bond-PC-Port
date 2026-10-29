@@ -125,6 +125,7 @@ REX_HOOK_RAW(sub_828C54E8) {
   const uint32_t player = b ? gpu::Get32(base, b + 48) : 0;
   t_player = player;
   t_stick_read = false;
+  NoteCameraObject(object);
   __imp__sub_828C54E8(ctx, base);
   const bool turnable = player && t_stick_read && !gpu::Get32(base, player + kStickDisabled);
   t_player = 0;

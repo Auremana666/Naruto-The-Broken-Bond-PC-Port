@@ -612,9 +612,10 @@ void OptionsMenu::BuildPages() {
     cheats.items.push_back(camera);
   }
   {
-    Item speed = choice("SPEED UP", "speed_up_factor",
-                        {{"2X", "2"}, {"3X", "3"}, {"4X", "4"}, {"6X", "6"}, {"8X", "8"}},
-                        "Left / right: how much faster while its key is held. Enter: change the key.");
+    Item speed = choice("GAME SPEED", "speed_up_factor",
+                        {{"0.25X", "0.25"}, {"0.5X", "0.5"}, {"0.75X", "0.75"}, {"2X", "2"}, {"3X", "3"},
+                         {"4X", "4"}, {"6X", "6"}, {"8X", "8"}},
+                        "Left / right: slow motion or faster while its key is held. Enter: change the key.");
     speed.shortcut = "bind_speed_up";
     cheats.items.push_back(speed);
   }

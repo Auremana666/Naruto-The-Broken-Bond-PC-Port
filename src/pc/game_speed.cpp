@@ -16,7 +16,8 @@
 #include "gpu/interpolation/tick.h"
 
 REXCVAR_DEFINE_STRING(bind_speed_up, "NumpadPlus", "Keybinds", "Hold to speed the game up");
-REXCVAR_DEFINE_STRING(speed_up_factor, "4", "Game", "How many times faster the game runs while SPEED UP is held: 2 to 8");
+REXCVAR_DEFINE_STRING(speed_up_factor, "4", "Game",
+                      "How fast the game runs while SPEED UP is held: 0.25, 0.5 or 0.75 (slow motion), 2 to 8");
 
 namespace {
 bool WindowFocused() {
@@ -30,6 +31,6 @@ void UpdateGameSpeed() {
   const auto key = rex::ui::ParseVirtualKey(REXCVAR_GET(bind_speed_up));
   const bool held = key != rex::ui::VirtualKey::kNone && WindowFocused() &&
                     (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) != 0;
-  const int factor = std::atoi(REXCVAR_GET(speed_up_factor).c_str());
-  gpu::tick::SetSpeed(held && factor >= 2 && factor <= 8 ? static_cast<float>(factor) : 1.0f);
+  const double factor = std::atof(REXCVAR_GET(speed_up_factor).c_str());
+  gpu::tick::SetSpeed(held && factor >= 0.25 && factor <= 8.0 ? static_cast<float>(factor) : 1.0f);
 }

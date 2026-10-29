@@ -158,10 +158,13 @@ void Decide(uint8_t* base) {
   const uint32_t time = Get32(base, kTimePointer);
   const bool fixed = time && Get32(base, time + 72);
   const float period = time ? GetFloat(base, time + 76) : 0.0f;
-  const double frame_period = 1.0 / double(FrameRate());
+  // Slow motion (Speed below 1): the ticks come later in real time, the frames between them
+  // still interpolated; frame_period is a frame's share of the game's time.
+  const double slow = std::min(double(Speed()), 1.0);
+  const double frame_period = slow / double(FrameRate());
   // A step of 0 is the pause: the logic runs every frame without advancing.
   const bool valid_period = fixed && std::isfinite(period) && period > 1e-4f && period <= 0.25f;
-  const bool gate = Owning() && valid_period && period > frame_period * 1.25 && Speed() == 1.0f;
+  const bool gate = Owning() && valid_period && period > frame_period * 1.25 && Speed() <= 1.0f;
   // Without the gate under the fixed step, every iteration is a tick at the
   // title's step: the limiter paces at the tick rate (PaceRate).
   pace_rate.store(valid_period && !gate ? uint32_t(std::lround(1.0 / double(period))) : FrameRate());
@@ -179,7 +182,7 @@ void Decide(uint8_t* base) {
     // A new run of the gate starts with a tick; then the real time since the
     // previous iteration is owed. A tick is due within half a frame of its
     // period, so the frames at a steady rate alternate without jitter.
-    debt = started ? debt + double(now.QuadPart - last) / double(frequency) : double(period);
+    debt = started ? debt + slow * double(now.QuadPart - last) / double(frequency) : double(period);
     started = true;
     if (debt > 2.0 * period) {
       debt = 2.0 * period;
@@ -250,16 +253,21 @@ struct SpeedStep {
   uint32_t time = 0;
   float own = 0.0f, set = 0.0f;
 };
-SpeedStep BeginSpeedStep(uint8_t* base) {
+SpeedStep BeginSpeedStep(uint8_t* base, bool gated) {
   const float factor = Speed();
-  const uint32_t time = factor > 1.0f ? Get32(base, kTimePointer) : 0u;
+  if (gated && factor < 1.0f) {  // The gate slows the ticks instead (Decide).
+    pace_speed.store(1.0f);
+    return {};
+  }
+  const uint32_t time = factor != 1.0f ? Get32(base, kTimePointer) : 0u;
   const float own = time && Get32(base, time + 72) ? GetFloat(base, time + 76) : 0.0f;
   if (!std::isfinite(own) || own <= 1e-4f || own > 0.25f) {
     pace_speed.store(factor);
     return {};
   }
-  const float step_factor = std::clamp(kSpeedStepMax / own, 1.0f, factor);
-  pace_speed.store(factor / step_factor);
+  // Slow motion (below 1): a shorter step at the normal pace.
+  const float step_factor = factor < 1.0f ? factor : std::clamp(kSpeedStepMax / own, 1.0f, factor);
+  pace_speed.store(factor < 1.0f ? 1.0f : factor / step_factor);
   const SpeedStep step{time, own, own * step_factor};
   PutFloat(base, time + 76, step.set);
   return step;
@@ -339,7 +347,7 @@ void EndView(uint8_t* base) {
 }
 
 void SetSpeed(float value) {
-  speed.store(value >= 1.0f && value <= 16.0f ? value : 1.0f);
+  speed.store(value >= 0.1f && value <= 16.0f ? value : 1.0f);
   if (speed.load() == 1.0f) pace_speed.store(1.0f);
 }
 float PaceSpeed() { return pace_speed.load(std::memory_order_relaxed); }
@@ -372,7 +380,7 @@ void MainStep(PPCContext& ctx, uint8_t* base) {
     return;
   }
   if (!Gating()) {
-    const SpeedStep speed_step = BeginSpeedStep(base);
+    const SpeedStep speed_step = BeginSpeedStep(base, false);
     __imp__sub_827F73F0(ctx, base);
     EndSpeedStep(base, speed_step);
     return;
@@ -380,7 +388,7 @@ void MainStep(PPCContext& ctx, uint8_t* base) {
   Decide(base);
   in_step = frame.gate;
   if (frame.tick) {
-    const SpeedStep speed_step = BeginSpeedStep(base);
+    const SpeedStep speed_step = BeginSpeedStep(base, frame.gate);
     __imp__sub_827F73F0(ctx, base);
     EndSpeedStep(base, speed_step);
   } else {

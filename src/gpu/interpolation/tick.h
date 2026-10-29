@@ -85,7 +85,8 @@ const char* Label();
 void BeginView(uint8_t* base);
 void EndView(uint8_t* base);
 // PC speed up (pc/game_speed.h), any thread: the game runs this many times
-// faster, 1 normally. While above 1 every iteration is a tick (no gate) whose
+// faster, 1 normally; below 1, slow motion (a shorter fixed step at the
+// normal pace). While above 1 every iteration is a tick (no gate) whose
 // fixed step is lengthened up to 1/15 s, and the own limiter paces the rest
 // of the factor faster (PaceSpeed); vertical sync or a slow frame caps that
 // part.

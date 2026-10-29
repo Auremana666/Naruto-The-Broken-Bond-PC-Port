@@ -274,6 +274,14 @@ class BrokenBondApp : public rex::ReXApp {
       ShowToast(FreeCameraOn() ? "FREE CAMERA: ON" : "FREE CAMERA: OFF");
     });
 
+    // 8: while the free camera is on, the character jumps to the camera.
+    rex::ui::RegisterBind("bind_free_camera_teleport", "8", "Teleport to the free camera", [this]() {
+      if (options_ && options_->IsCapturing()) return;
+      if (!FreeCameraOn()) return;
+      RequestTeleport();
+      ShowToast("TELEPORTED");
+    });
+
     // F2 (rebindable in PC Options > Shortcut Keys): FPS counter on/off, saved to naruto.toml.
     rex::ui::RegisterBind("bind_fps_counter", "F2", "Toggle FPS counter", [this]() {
       if (options_ && options_->IsCapturing()) return;
@@ -292,6 +300,7 @@ class BrokenBondApp : public rex::ReXApp {
     rex::ui::UnregisterBind("bind_options");
     rex::ui::UnregisterBind("bind_fps_counter");
     rex::ui::UnregisterBind("bind_free_camera");
+    rex::ui::UnregisterBind("bind_free_camera_teleport");
     rex::ui::UnregisterBind("bind_toggle_logs");
     for (const auto& sc : ShortcutList()) {
       if (sc.page >= 0) rex::ui::UnregisterBind(sc.cvar);
