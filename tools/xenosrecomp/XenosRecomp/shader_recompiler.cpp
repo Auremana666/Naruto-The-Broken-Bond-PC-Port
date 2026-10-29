@@ -246,6 +246,52 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
 
 void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicubic)
 {
+#ifdef NARUTO_RECOMP
+    // NARUTO_RECOMP: getGradients, as Xenia: the screen-space derivatives of
+    // the first two coordinates, (ddx(u), ddy(u), ddx(v), ddy(v)), without the
+    // texture. Broken Bond's curse mark shaders test them (the marks of
+    // Kimimaro and the others); left out, the register kept its old value.
+    if (instr.opcode == FetchOpcode::GetTextureGradients)
+    {
+        if (instr.isPredicated)
+        {
+            indent();
+            println("if ({}p0)", instr.predCondition ? "" : "!");
+            indent();
+            out += "{\n";
+            ++indentation;
+        }
+        indent();
+        out += "{\n";
+        indent();
+        print("\tfloat2 gradientCoord = r{}.", instr.srcRegister);
+        for (size_t i = 0; i < 2; i++)
+            out += SWIZZLES[((instr.srcSwizzle >> (i * 2))) & 0x3];
+        out += ";\n";
+        indent();
+        if (isPixelShader)
+            out += "\tfloat4 gradients = float4(ddx_coarse(gradientCoord.x), ddy_coarse(gradientCoord.x), "
+                   "ddx_coarse(gradientCoord.y), ddy_coarse(gradientCoord.y));\n";
+        else
+            out += "\tfloat4 gradients = 0.0;\n";
+        indent();
+        print("\tr{}.", instr.dstRegister);
+        printDstSwizzle(instr.dstSwizzle, false);
+        out += " = gradients.";
+        printDstSwizzle(instr.dstSwizzle, true);
+        out += ";\n";
+        indent();
+        out += "}\n";
+        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+        if (instr.isPredicated)
+        {
+            --indentation;
+            indent();
+            out += "}\n";
+        }
+        return;
+    }
+#endif
     if (instr.opcode != FetchOpcode::TextureFetch && instr.opcode != FetchOpcode::GetTextureWeights)
         return;
 
