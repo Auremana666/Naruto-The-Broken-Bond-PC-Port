@@ -605,32 +605,18 @@ void OptionsMenu::BuildPages() {
     Item camera;
     camera.kind = Kind::kAction;
     camera.label = "FREE CAMERA";
-    camera.help = "Freezes the game and flies the camera: WASD, Space / Ctrl, Shift, mouse or arrows.";
+    camera.help = "Left / right: on or off. Enter: change its key. Fly with WASD, Space / Ctrl, mouse.";
     camera.summary = []() { return std::string(FreeCameraOn() ? "ON" : "OFF"); };
     camera.action = []() { ToggleFreeCamera(); };
+    camera.shortcut = "bind_free_camera";
     cheats.items.push_back(camera);
-    Item key;
-    key.kind = Kind::kKeyBind;
-    key.label = "FREE CAMERA KEY";
-    key.cvar = "bind_free_camera";
-    key.default_keys = "6";
-    key.single_key = true;
-    key.help = "Turns the free camera on and off during the game.";
-    cheats.items.push_back(key);
   }
-  cheats.items.push_back(choice("SPEED UP", "speed_up_factor",
-                                {{"2X", "2"}, {"3X", "3"}, {"4X", "4"}, {"6X", "6"}, {"8X", "8"}},
-                                "How much faster the game runs while the SPEED UP key is held. Vertical sync limits "
-                                "it."));
   {
-    Item key;
-    key.kind = Kind::kKeyBind;
-    key.label = "SPEED UP KEY";
-    key.cvar = "bind_speed_up";
-    key.default_keys = "NumpadPlus";
-    key.single_key = true;
-    key.help = "Hold it to run the game faster, for cutscenes you cannot skip.";
-    cheats.items.push_back(key);
+    Item speed = choice("SPEED UP", "speed_up_factor",
+                        {{"2X", "2"}, {"3X", "3"}, {"4X", "4"}, {"6X", "6"}, {"8X", "8"}},
+                        "Left / right: how much faster while its key is held. Enter: change the key.");
+    speed.shortcut = "bind_speed_up";
+    cheats.items.push_back(speed);
   }
   {
     Item auto_jutsu = submenu("AUTO JUTSU", 10);
@@ -923,6 +909,15 @@ std::string OptionsMenu::ValueText(const Item& item) const {
   }
 }
 
+void OptionsMenu::OpenShortcut(const std::string& cvar) {
+  constexpr int kShortcutPage = 8;
+  OpenPage(kShortcutPage);
+  Page& page = pages_[kShortcutPage];
+  for (size_t i = 0; i < page.items.size(); ++i) {
+    if (page.items[i].cvar == cvar) page.selected = static_cast<int>(i);
+  }
+}
+
 void OptionsMenu::OpenPage(int page) {
   page_stack_.push_back(page_);
   page_ = page;
@@ -1076,6 +1071,18 @@ void OptionsMenu::HandleInput(const Nav& nav) {
   }
 
   Item& item = page.items[page.selected];
+  if (!item.shortcut.empty()) {
+    // Left / right change the item itself, confirm goes to its key in Shortcut Keys.
+    if (nav.left || nav.right) {
+      if (item.kind == Item::Kind::kAction) {
+        if (item.action) item.action();
+      } else {
+        Activate(item, nav.left ? -1 : +1);
+      }
+    }
+    if (nav.confirm) OpenShortcut(item.shortcut);
+    return;
+  }
   if (item.kind == Item::Kind::kKeyBind && !item.mode_cvar.empty() && (nav.left || nav.right)) {
     // Left / right cycle the press mode of a keyboard button binding.
     const std::string mode = GetSetting(item.mode_cvar);
@@ -1128,7 +1135,9 @@ void OptionsMenu::HandleMouse(ImGuiIO& io) {
     // Clicking the left half of a value steps back, anywhere else steps forward.
     const float value_x = S(150.0f) + S(760.0f);
     const bool left_half = io.MousePos.x > value_x && io.MousePos.x < value_x + S(220.0f);
-    Activate(page.items[page.selected], left_half ? -1 : +1);
+    Item& clicked = page.items[page.selected];
+    if (!clicked.shortcut.empty()) OpenShortcut(clicked.shortcut);
+    else Activate(clicked, left_half ? -1 : +1);
   }
 }
 

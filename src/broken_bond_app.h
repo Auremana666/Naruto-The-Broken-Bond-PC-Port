@@ -267,8 +267,8 @@ class BrokenBondApp : public rex::ReXApp {
       ShowToast(on ? "LOG FILES: ON" : "LOG FILES: OFF");
     });
 
-    // 6 (rebindable in PC Options > Cheats or Shortcut Keys): free camera on/off.
-    rex::ui::RegisterBind("bind_free_camera", "6", "Toggle free camera", [this]() {
+    // 7 (rebindable in PC Options > Cheats or Shortcut Keys): free camera on/off.
+    rex::ui::RegisterBind("bind_free_camera", "7", "Toggle free camera", [this]() {
       if (options_ && options_->IsCapturing()) return;
       ToggleFreeCamera();
       ShowToast(FreeCameraOn() ? "FREE CAMERA: ON" : "FREE CAMERA: OFF");

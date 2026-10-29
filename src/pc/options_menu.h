@@ -39,7 +39,7 @@ inline const std::vector<Shortcut>& ShortcutList() {
       {"bind_debug_overlay", "ADVANCED FPS", "", "Detailed frame rate and performance overlay.", -1},
       {"bind_achievements", "ACHIEVEMENTS", "F7", "Shows the achievements you have unlocked.", -1},
       {"bind_speed_up", "SPEED UP (HOLD)", "NumpadPlus", "Hold to run the game faster, for cutscenes you cannot skip.", -1},
-      {"bind_free_camera", "FREE CAMERA", "6",
+      {"bind_free_camera", "FREE CAMERA", "7",
        "Freezes the game and flies the camera: WASD, Space / Ctrl, Shift, mouse or arrows.", -1},
       {"bind_open_display", "OPEN DISPLAY", "", "Jumps straight to the Display page.", 1},
       {"bind_open_graphics", "OPEN GRAPHICS", "", "Jumps straight to the Graphics page.", 2},
@@ -102,6 +102,9 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
     std::string mode_cvar;            // kKeyBind: press mode setting (left / right change it)
     std::function<std::string()> summary;  // kSubmenu: text shown in the value column
     int picture = -1;                 // index into pictures_, drawn left of the label
+    // A shortcut key (ShortcutList cvar) the item is used with: left / right change the item,
+    // confirm or a click opens Shortcut Keys on that key's row.
+    std::string shortcut;
   };
 
   struct Page {
@@ -128,6 +131,8 @@ class OptionsMenu : public rex::ui::ImGuiDialog {
   void Activate(Item& item, int direction);
   void Capture(ImGuiIO& io, bool cancel);
   void OpenPage(int page);
+  // Opens Shortcut Keys with the row of the given shortcut cvar selected.
+  void OpenShortcut(const std::string& cvar);
 
   // The controller layout page.
   void ControllerFrame(ImGuiIO& io);

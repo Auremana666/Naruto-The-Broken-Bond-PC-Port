@@ -1427,9 +1427,12 @@ DrawTranslation TranslateDraw(DrawCapture& c, GuardSink& sink) {
   // below the threshold keeps the clip: with the title's alpha to mask (as in
   // Broken Bond's title sky draw) the SDK keeps only the pixels that pass both
   // the test and the coverage of their own alpha, which the sharpened variant
-  // would turn into full coverage.
+  // would turn into full coverage. A threshold of 1 or more keeps the clip
+  // too: the title hides a layer that way (Sasuke's Sharingan over his eyes,
+  // the curse marks), and the sharpened alpha, boosted by the mip level,
+  // would show it.
   uint32_t ps_spec = s.ps_spec;
-  if (ps_spec && !depth_only && !s.alpha_invert) {
+  if (ps_spec && !depth_only && !s.alpha_invert && alpha_ref < 1.0f) {
     ps_spec = TransparencySpec(ps_spec, ps_cached->spec_mask, resources.Samples(c.targets[0]), request.blend_control);
     if (ps_spec != s.ps_spec) request.alpha_to_coverage = true;
   }
