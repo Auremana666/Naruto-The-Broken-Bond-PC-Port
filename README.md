@@ -44,6 +44,10 @@ it with Proton (see [Steam Deck](#steam-deck)).
 - **Free camera moved to key 7.**
 - **Slow motion:** Game Speed (PC Options > Cheats) now also has 0.25X, 0.5X and 0.75X. Hold
   **Numpad +** to play in slow motion or faster, the frame rate stays smooth.
+- **Keyboard button prompts** (PC Options > Controls > Button Prompts): on keyboard the game
+  shows your keys instead of Xbox buttons, in its text ("Press [Space] to jump") and on its
+  button icons. Automatic switches between keys and Xbox buttons by what you pressed last, and
+  follows your remapped keys right away. Made by **eslamira**.
 - Cheats with a key (Free Camera, Game Speed): left / right change them, Enter or a click opens
   Shortcut Keys on that key.
 
@@ -278,6 +282,7 @@ you can send a few Ryō my way on Ko-fi. Thank you, believe it!
 | Native Direct3D 12 renderer: draws, shaders, textures, frame interpolation, frame rate, resolution, MSAA, FXAA, CAS / FSR, graphics cache | jorjbarbosa (first written for [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp)) |
 | PC Options menu, key and controller remapping (toggle / turbo), keyboard as player 1 or 2, Auto Jutsu, unlocks, intro skip, PC title screen, Save Backup Tool | this port (first made for v1, moved to v2) |
 | Field of view, ultrawide that widens the view, mouse camera | this port |
+| Keyboard button prompts (text and icons) | eslamira; live switching by this port |
 | v2.6: curse mark and Sharingan fixes (shader gradients, hidden layers), slow motion, free camera on 7 | this port |
 | v2.5: weather, free camera, speed up, Hokage skins, live graphics options, Steam Deck fixes (shaders under Proton, crash guard), trap jutsu fix | this port |
 | Menu overlay on the native renderer, Skip Unready Graphics option, Anti-aliasing OFF fix, render-thread speedups, performance log, window close fixes | this port, changes inside his renderer |
@@ -287,6 +292,7 @@ you can send a few Ryō my way on Ko-fi. Thank you, believe it!
 
 - **Auremana666:** project lead, testing, title screen and trailer.
 - **tylerl567:** Steam Deck tester. His Deck logs made v2.5 playable on the Steam Deck.
+- **eslamira:** keyboard button prompts.
 - **Claude AI (Anthropic):** the code of this port's PC features and the v1 recompilation.
 - [jorjbarbosa](https://github.com/jorjbarbosa): the
   [Broken Bond recomp](https://github.com/jorjbarbosa/broken-bond-recomp), whose recompilation,
