@@ -1,5 +1,9 @@
 # Naruto: The Broken Bond — PC Port
 
+> **A message from Auremana:** Hey guys, it's Auremana here. This will be the last update for this PC port. I wanted to put more options and fun stuff into the game, but I forgot I made this port not for people but mainly for my friend who is disabled. He wanted to play Naruto: Rise of a Ninja, but there wasn't any option for him to enjoy the game. Then I said I would make him the next port, and he made me post it on GitHub for people.
+>
+> If you want to support the guy who actually made this amazing port, go support **[jorjbarbosa](https://github.com/jorjbarbosa)**. He actually made this game work. I just made options for people who need them to enjoy this game, like remappable controls, different modes for controls (Toggle, Turbo, etc.) and Auto Jutsus. Most people don't care about those options because they don't need them, they just want a working game. As I said, go support the main guy who is actually making **[broken-bond-recomp](https://github.com/jorjbarbosa/broken-bond-recomp)** and **[naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp)**: **[jorjbarbosa](https://github.com/jorjbarbosa)**.
+
 An unofficial PC port of **Naruto: The Broken Bond** (Xbox 360, 2008), made by statically
 recompiling the original game with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and
 adding a full PC options menu on top.
@@ -20,8 +24,10 @@ resolutions, smoother play) are his work. This port adds its own PC features on 
 ## Download and play
 
 1. Download the latest zip from the [Releases](../../releases) page and extract it.
-2. Put your game's **ISO** file in the `assets` folder (or next to `Naruto The Broken Bond PC.exe`).
-3. Run **Naruto The Broken Bond PC.exe**.
+2. Run **Naruto The Broken Bond PC.exe**. On the first start it asks where the game is: pick your
+   game's **ISO**, its **default.xex** (extracted files), or an archive (**ZIP, RAR, 7Z, ZAR**) with
+   one of them. It remembers your choice. (An ISO in the `assets` folder is found without asking.)
+3. Play.
 4. Press **F1** (or **Back + Start** on a controller) to open **PC Options**.
 
 Keep the game folder somewhere you can write to, such as `C:\Games`, your Desktop, Documents or
@@ -35,6 +41,14 @@ The first start can take a moment while Windows scans the new program.
 
 **Steam Deck / Linux:** add `Naruto The Broken Bond PC.exe` to Steam as a non-Steam game and run
 it with Proton (see [Steam Deck](#steam-deck)).
+
+## What's new in v2.7
+
+- **Pick the game anywhere:** the game no longer has to sit next to the exe. On the first start a
+  window asks where it is: an ISO, the default.xex of extracted files, or a ZIP, RAR, 7Z or ZAR
+  archive (unpacked once, next to the archive). The choice is remembered.
+- **Mini game crash fixed:** leaving a mini game could crash the game (from the button prompts
+  switching between keyboard and controller).
 
 ## What's new in v2.6
 
@@ -283,6 +297,7 @@ you can send a few Ryō my way on Ko-fi. Thank you, believe it!
 | PC Options menu, key and controller remapping (toggle / turbo), keyboard as player 1 or 2, Auto Jutsu, unlocks, intro skip, PC title screen, Save Backup Tool | this port (first made for v1, moved to v2) |
 | Field of view, ultrawide that widens the view, mouse camera | this port |
 | Keyboard button prompts (text and icons) | eslamira; live switching by this port |
+| v2.7: game location picker (ISO, XEX, ZIP, RAR, 7Z, ZAR), mini game crash fix | this port |
 | v2.6: curse mark and Sharingan fixes (shader gradients, hidden layers), slow motion, free camera on 7 | this port |
 | v2.5: weather, free camera, speed up, Hokage skins, live graphics options, Steam Deck fixes (shaders under Proton, crash guard), trap jutsu fix | this port |
 | Menu overlay on the native renderer, Skip Unready Graphics option, Anti-aliasing OFF fix, render-thread speedups, performance log, window close fixes | this port, changes inside his renderer |
