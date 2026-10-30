@@ -1,6 +1,6 @@
 # Naruto: The Broken Bond — PC Port
 
-> **A message from Auremana:** Hey guys, it's Auremana here. This will be the last update for this PC port. I wanted to put more options and fun stuff into the game, but I forgot I made this port not for people but mainly for my friend who is disabled. He wanted to play Naruto: Rise of a Ninja, but there wasn't any option for him to enjoy the game. Then I said I would make him the next port, and he made me post it on GitHub for people.
+> It's Auremana here. This will be the last update for this PC port. I wanted to put more options and fun stuff into the game, but I forgot I made this port not for people but mainly for my friend who is disabled. He wanted to play Naruto: Rise of a Ninja, but there wasn't any option for him to enjoy the game. Then I said I would make him the next port, and he made me post it on GitHub for people.
 >
 > If you want to support the guy who actually made this amazing port, go support **[jorjbarbosa](https://github.com/jorjbarbosa)**. He actually made this game work. I just made options for people who need them to enjoy this game, like remappable controls, different modes for controls (Toggle, Turbo, etc.) and Auto Jutsus. Most people don't care about those options because they don't need them, they just want a working game. As I said, go support the main guy who is actually making **[broken-bond-recomp](https://github.com/jorjbarbosa/broken-bond-recomp)** and **[naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp)**: **[jorjbarbosa](https://github.com/jorjbarbosa)**.
 
