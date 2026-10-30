@@ -10,13 +10,6 @@
 void ToggleFreeCamera();
 bool FreeCameraOn();
 
-// While the free camera is on: moves the player's character to the camera and turns the free
-// camera off (key 8). Any thread; done at the next display of the camera.
-void RequestTeleport();
-
-// The game's camera object of the player (r3 of the camera input 828C54E8), game thread.
-void NoteCameraObject(uint32_t object);
-
 // The display's camera (82BD9108, r3 the view's entry), game thread: while the free camera is
 // on, moves it by the input since the last call and writes it over the entry's camera matrix.
 // Returns true when it wrote; saved then holds the entry's own matrix to put back after the view

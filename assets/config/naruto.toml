@@ -83,8 +83,6 @@ bind_speed_up = "NumpadPlus"
 speed_up_factor = "4"
 # Free camera: this key freezes the game and flies the camera around.
 bind_free_camera = "7"
-# Teleport: while the free camera is on, this key moves your character to the camera.
-bind_free_camera_teleport = "8"
 # Hidden Characters & Skins: the Fight Mode character who wears the First / Second Hokage's
 # skin (only a skin: the character keeps their own moves), or off.
 first_hokage = "off"

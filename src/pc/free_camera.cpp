@@ -7,13 +7,6 @@
 // camera looks along -row 1, row 2 up), row 3 its position. The world's up is +Z. The free camera starts where the game's camera is,
 // and turns around the world's up (yaw) and its own right axis (pitch).
 //
-// Teleport (key 8): the player's character (the game object [[camera + 0x18] + 0x94] of the
-// camera object the camera input 828C54E8 works on) takes the free camera's position, and the
-// free camera turns off. The translation row of its matrix (+0x60) alone is put back by the next
-// logic step: the game moves the character from its feet position (row 3 of the matrix at
-// +0x3050), which the physics, the animation and the world keep their own copies of. So every
-// copy of the feet position in the guest heap moves by the same offset.
-//
 // Controls: W A S D move, Space / E up, Ctrl / Q down, Shift faster, the mouse (Mouse Moves
 // Camera on) or the arrow keys look. A controller: left stick moves, right stick looks, right
 // trigger up, left trigger down, A held faster.
@@ -50,8 +43,6 @@ constexpr float kPitchLimit = 1.45f;    // Radians from level.
 constexpr uint16_t kPadButtonA = 0x1000;  // XInput's A.
 
 std::atomic<bool> on{false};
-std::atomic<bool> teleport{false};
-std::atomic<uint32_t> camera_object{0};
 
 // Game thread.
 bool started = false;
@@ -136,56 +127,7 @@ void Move() {
   for (int i = 0; i < 3; ++i)
     position[i] += (right[i] * move_x + ahead[i] * move_y) * step + (i == 2 ? move_z * step : 0.0f);
 }
-
-// The guest heap the game objects live in, and how close a copy of the feet position is.
-constexpr uint64_t kHeapStart = 0x30000000, kHeapEnd = 0x60000000;
-constexpr float kSameFeet = 0.003f;
-
-void Teleport(uint8_t* base) {
-  const uint32_t camera = camera_object.load();
-  const uint32_t a = camera ? gpu::Get32(base, camera + 0x18) : 0;
-  const uint32_t character = a >= 0x40000000 && a < 0x60000000 ? gpu::Get32(base, a + 0x94) : 0;
-  if (character < 0x40000000 || character >= 0x60000000) {
-    REXLOG_INFO("[free camera] teleport: no character (camera {:08X})", camera);
-    return;
-  }
-  Vec feet, offset;
-  for (int i = 0; i < 3; ++i) {
-    feet[i] = gpu::GetFloat(base, character + 0x3050 + 4 * i);
-    offset[i] = position[i] - gpu::GetFloat(base, character + 0x60 + 4 * i);
-  }
-  int moved = 0;
-  for (uint64_t at64 = kHeapStart; at64 < kHeapEnd; at64 += 4) {
-    if ((at64 & 0xFFF) == 0) {
-      MEMORY_BASIC_INFORMATION mbi{};
-      if (!VirtualQuery(base + at64, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
-          (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
-        const uint64_t next = reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize -
-                              reinterpret_cast<uint64_t>(base);
-        at64 = std::max<uint64_t>(next, at64 + 0x1000) - 4;
-        continue;
-      }
-    }
-    const uint32_t at = uint32_t(at64);
-    if ((at & 0xFFF) > 0xFF4) continue;  // The triple would cross into a page that may not be there.
-    bool same = true;
-    for (int i = 0; i < 3 && same; ++i) same = std::fabs(gpu::GetFloat(base, at + 4 * i) - feet[i]) < kSameFeet;
-    if (!same) continue;
-    for (int i = 0; i < 3; ++i) gpu::PutFloat(base, at + 4 * i, feet[i] + offset[i]);
-    ++moved;
-    at64 += 8;
-  }
-  for (int i = 0; i < 3; ++i) gpu::PutFloat(base, character + 0x60 + 4 * i, position[i]);
-  REXLOG_INFO("[free camera] teleport {:08X} to ({:.1f}, {:.1f}, {:.1f}), {} copies of the feet", character,
-              position[0], position[1], position[2], moved);
-}
 }  // namespace
-
-void NoteCameraObject(uint32_t object) { camera_object.store(object, std::memory_order_relaxed); }
-
-void RequestTeleport() {
-  if (FreeCameraOn()) teleport.store(true);
-}
 
 void ToggleFreeCamera() {
   const bool now_on = !on.load();
@@ -205,13 +147,6 @@ bool ApplyFreeCamera(uint8_t* base, uint32_t entry, std::array<float, 16>& saved
   for (float v : saved)
     if (!std::isfinite(v)) return false;
   if (!started) Start(saved);
-  if (teleport.exchange(false)) {
-    Teleport(base);
-    on.store(false);
-    gpu::tick::SetFrozen(false);
-    started = false;
-    return false;
-  }
   Move();
   Vec right, ahead, up;
   Axes(right, ahead, up);

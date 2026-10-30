@@ -41,8 +41,6 @@ inline const std::vector<Shortcut>& ShortcutList() {
       {"bind_speed_up", "GAME SPEED (HOLD)", "NumpadPlus", "Hold to run the game faster or in slow motion (Cheats > Game Speed).", -1},
       {"bind_free_camera", "FREE CAMERA", "7",
        "Freezes the game and flies the camera: WASD, Space / Ctrl, Shift, mouse or arrows.", -1},
-      {"bind_free_camera_teleport", "TELEPORT (FREE CAMERA)", "8",
-       "While the free camera is on, moves your character to the camera.", -1},
       {"bind_open_display", "OPEN DISPLAY", "", "Jumps straight to the Display page.", 1},
       {"bind_open_graphics", "OPEN GRAPHICS", "", "Jumps straight to the Graphics page.", 2},
       {"bind_open_controls", "OPEN CONTROLS", "", "Jumps straight to the Controls page.", 3},
