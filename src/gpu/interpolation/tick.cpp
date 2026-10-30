@@ -9,6 +9,7 @@
 #include "gpu/settings.h"
 #include <windows.h>
 #include <fmt/format.h>
+void WriteIconValues();  // keyboard_prompts.cpp
 #include <rex/hook.h>
 #include <rex/ppc/context.h>
 #include <algorithm>
@@ -373,6 +374,7 @@ void WorldChangeStep(PPCContext& ctx, uint8_t* base) {
 }
 
 void MainStep(PPCContext& ctx, uint8_t* base) {
+  WriteIconValues();  // keyboard_prompts.cpp: the button icons, on the game thread
   if (gpu::Active()) NoteStep(base);
   if (gpu::Active() && Frozen()) {
     FrozenStep(ctx, base);

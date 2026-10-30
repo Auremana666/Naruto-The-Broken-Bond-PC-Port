@@ -243,7 +243,18 @@ bool IsValueAt(uint32_t value) {
          p[8] == 0x17 && p[9] == 0x96 && p[10] == 5 && p[11] == 0 && p[12] == 7;
 }
 
-// Writes every icon value in the guest heap for a state. Runs without g_mutex (the search takes
+uint32_t StoredValue(uint32_t at) {
+  const uint8_t* p = g_base + at;
+  return p[0] | (p[1] << 8) | (p[2] << 16) | (uint32_t(p[3]) << 24);
+}
+
+// Values to write, found by the watcher and written by the game thread (WriteIconValues): the
+// game frees and reuses memory while it runs, so each value is checked again right before it is
+// written, on the thread that does the freeing.
+std::mutex g_pending_mutex;
+std::vector<std::pair<uint32_t, uint32_t>> g_pending;  // value address, value
+
+// Finds every icon value in the guest heap for a state. Runs without g_mutex (the search takes
 // a moment); libraries is a copy.
 void ApplyIcons(const std::vector<Library>& libraries, const std::string& state) {
   const bool keyboard = state != "controller";
@@ -275,7 +286,7 @@ void ApplyIcons(const std::vector<Library>& libraries, const std::string& state)
     return VirtualQuery(g_base + page, &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT &&
            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
   };
-  size_t written = 0;
+  std::vector<std::pair<uint32_t, uint32_t>> found;
   for (uint32_t page = 0x40000000u; page < 0x70000000u; page += 0x1000) {
     if (!readable(page)) continue;
     uint8_t* p = g_base + page;
@@ -286,13 +297,17 @@ void ApplyIcons(const std::vector<Library>& libraries, const std::string& state)
       if (!IsValueAt(page + i)) continue;
       int32_t value;
       if (!value_for(p[i - 9] | (p[i - 8] << 8), &value)) continue;
-      const uint32_t v = static_cast<uint32_t>(value);
-      const uint8_t bytes[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
-      std::memcpy(p + i, bytes, 4);
-      ++written;
+      const uint32_t v = static_cast<uint32_t>(icon_library::kValueBias + value);
+      const int32_t now = static_cast<int32_t>(StoredValue(page + i));
+      if (now == static_cast<int32_t>(v) || now < icon_library::kValueBias - icon_library::kValueRange ||
+          now > icon_library::kValueBias + icon_library::kValueRange)
+        continue;
+      found.push_back({page + i, v});
     }
   }
-  REXLOG_INFO("[prompts] icons: {} values written ({})", written, keyboard ? "keyboard" : "controller");
+  REXLOG_INFO("[prompts] icons: {} values to write ({})", found.size(), keyboard ? "keyboard" : "controller");
+  std::lock_guard lock(g_pending_mutex);
+  g_pending = std::move(found);
 }
 
 void ApplyAll() {
@@ -359,6 +374,30 @@ void Collect(uint32_t unit) {
     REXLOG_INFO("[prompts] text unit {:08X}: {} lines with button prompts", unit, found);
   }
 }
+
+}  // namespace
+
+void WriteIconValues() {
+  std::vector<std::pair<uint32_t, uint32_t>> pending;
+  {
+    std::lock_guard lock(g_pending_mutex);
+    if (g_pending.empty()) return;
+    pending.swap(g_pending);
+  }
+  for (const auto& [at, v] : pending) {
+    // Still the script's value: its pattern, and a stored value (not something the game wrote
+    // there since, such as a heap link in memory it freed).
+    if (!IsValueAt(at)) continue;
+    const int32_t now = static_cast<int32_t>(StoredValue(at));
+    if (now < icon_library::kValueBias - icon_library::kValueRange ||
+        now > icon_library::kValueBias + icon_library::kValueRange)
+      continue;
+    const uint8_t bytes[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
+    std::memcpy(g_base + at, bytes, 4);
+  }
+}
+
+namespace {
 
 // Picks up rebinding, the option itself and controllers being plugged in or out.
 void StartWatcher() {

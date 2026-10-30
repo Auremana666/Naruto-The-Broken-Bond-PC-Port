@@ -30,6 +30,10 @@ using LabelLookup = std::function<std::string(std::string_view icon)>;
 constexpr int kSlots = 8;
 constexpr int kFields = 2 + kSlots * 5;  // o visible, k visible, then per slot frame x y scale visible
 constexpr uint32_t kMarker = 0x7E5E0000u;
+// Values are stored plus kValueBias (the script subtracts it), so a stored value never looks like
+// a pointer, a size or zero: the port only writes over a stored value it recognizes.
+constexpr int32_t kValueBias = 0x7E600000;
+constexpr int32_t kValueRange = 0x80000;
 // Marker ids per library: the game loads more than one icon library (the mini-games have their
 // own), each gets a range of its own.
 constexpr uint32_t kIdsPerLibrary = 4096;

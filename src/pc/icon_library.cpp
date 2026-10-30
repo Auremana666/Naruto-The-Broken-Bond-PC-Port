@@ -553,7 +553,9 @@ class Script {
   void Value(int field, int32_t value) {
     Push(kMarker | uint16_t(first_id_ + field));
     code_.push_back(0x17);  // pop
-    Push(static_cast<uint32_t>(value));
+    Push(static_cast<uint32_t>(kValueBias + value));
+    Push(static_cast<uint32_t>(kValueBias));
+    code_.push_back(0x0B);  // subtract
   }
   void SetProperty(const std::string& target, int property, int field, int32_t value, int divisor) {
     code_.push_back(0x96);  // push target, property
