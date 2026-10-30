@@ -30,6 +30,9 @@ using LabelLookup = std::function<std::string(std::string_view icon)>;
 constexpr int kSlots = 8;
 constexpr int kFields = 2 + kSlots * 5;  // o visible, k visible, then per slot frame x y scale visible
 constexpr uint32_t kMarker = 0x7E5E0000u;
+// Marker ids per library: the game loads more than one icon library (the mini-games have their
+// own), each gets a range of its own.
+constexpr uint32_t kIdsPerLibrary = 4096;
 
 struct Rect {
   int32_t x0 = 0, x1 = 0, y0 = 0, y1 = 0;
@@ -49,9 +52,10 @@ struct Result {
 };
 
 // font: a TrueType font (the menu's Titan One) used for the key labels. keyboard: the look the
-// icons start with (their values before the port writes any).
+// icons start with (their values before the port writes any). first_id: the library's first
+// marker id (a multiple of kIdsPerLibrary).
 Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& labels,
-                          const uint8_t* font, size_t font_size, bool keyboard);
+                          const uint8_t* font, size_t font_size, bool keyboard, uint16_t first_id);
 
 // The values of one icon's fields for a label (keyboard) or the original look.
 std::vector<int32_t> IconValues(const Icon& icon, const std::string& label, bool keyboard,

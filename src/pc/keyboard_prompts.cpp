@@ -223,15 +223,18 @@ void Apply(Line& line, bool keyboard, bool mouse_look) {
   }
 }
 
-// The button icons (see the icon library part below): where the game's copy of each icon
-// script keeps its values, found once the library is loaded.
-std::vector<icon_library::Icon> g_icons;
+// The button icons (see the icon library part below). Each icon library the game loaded (the
+// main one, and one per mini-game) has its own range of marker ids. When the device, the
+// bindings or the option change, the guest heap is searched for the markers and the values after
+// them are rewritten; a library that loads later starts with the values of that moment.
+struct Library {
+  std::string url;
+  std::vector<icon_library::Icon> icons;
+  std::string state;  // the state its values were made or last written for
+  std::chrono::steady_clock::time_point loaded;
+};
+std::vector<Library> g_libraries;  // slot = marker id / kIdsPerLibrary
 const uint8_t* g_font = nullptr;
-uint32_t g_library_copy = 0, g_library_size = 0;
-std::chrono::steady_clock::time_point g_library_loaded;
-std::vector<std::vector<uint32_t>> g_value_at;  // by marker id
-int g_scans = 0;
-std::string g_icon_state;
 
 // Whether a value follows "push marker; pop; push" there.
 bool IsValueAt(uint32_t value) {
@@ -240,72 +243,81 @@ bool IsValueAt(uint32_t value) {
          p[8] == 0x17 && p[9] == 0x96 && p[10] == 5 && p[11] == 0 && p[12] == 7;
 }
 
-// Finds every icon value in the guest heap. Caller holds g_mutex.
-void FindValues() {
-  g_value_at.assign(g_icons.size() * icon_library::kFields, {});
-  size_t found = 0;
+// Writes every icon value in the guest heap for a state. Runs without g_mutex (the search takes
+// a moment); libraries is a copy.
+void ApplyIcons(const std::vector<Library>& libraries, const std::string& state) {
+  const bool keyboard = state != "controller";
+  const bool mouse = MouseLook();
+  // Values by marker id, made when first needed.
+  std::unordered_map<uint32_t, std::vector<int32_t>> values;
+  auto value_for = [&](uint32_t id, int32_t* out) {
+    const uint32_t slot = id / icon_library::kIdsPerLibrary;
+    if (slot >= libraries.size()) return false;
+    const uint32_t local = id % icon_library::kIdsPerLibrary;
+    const uint32_t index = local / icon_library::kFields, field = local % icon_library::kFields;
+    const auto& icons = libraries[slot].icons;
+    if (index >= icons.size()) return false;
+    const uint32_t key = slot * icon_library::kIdsPerLibrary + index;
+    auto it = values.find(key);
+    if (it == values.end()) {
+      const icon_library::Icon& icon = icons[index];
+      it = values.emplace(key, icon_library::IconValues(
+                                   icon, keyboard_prompts::IconLabel(icon.name, Keybind, mouse),
+                                   keyboard, g_font)).first;
+    }
+    if (field >= it->second.size()) return false;
+    *out = it->second[field];
+    return true;
+  };
   // Readable host pages only (the guest heaps' own bookkeeping does not say what is mapped).
   auto readable = [](uint32_t page) {
     MEMORY_BASIC_INFORMATION mbi{};
     return VirtualQuery(g_base + page, &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT &&
            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
   };
+  size_t written = 0;
   for (uint32_t page = 0x40000000u; page < 0x70000000u; page += 0x1000) {
     if (!readable(page)) continue;
-    const uint8_t* p = g_base + page;
+    uint8_t* p = g_base + page;
     // A value may end on the next page.
     const uint32_t end = readable(page + 0x1000) ? 0x1000 + 13 : 0x1000 - 4;
     for (uint32_t i = 13; i < end; ++i) {
       if (p[i - 7] != 0x5E || p[i - 6] != 0x7E) continue;
-      const uint32_t value = page + i;
-      if (!IsValueAt(value)) continue;
-      if (value >= g_library_copy && value < g_library_copy + g_library_size) continue;
-      const uint32_t id = p[i - 9] | (p[i - 8] << 8);
-      if (id < g_value_at.size()) {
-        g_value_at[id].push_back(value);
-        ++found;
-      }
+      if (!IsValueAt(page + i)) continue;
+      int32_t value;
+      if (!value_for(p[i - 9] | (p[i - 8] << 8), &value)) continue;
+      const uint32_t v = static_cast<uint32_t>(value);
+      const uint8_t bytes[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
+      std::memcpy(p + i, bytes, 4);
+      ++written;
     }
   }
-  REXLOG_INFO("[prompts] icon values: {} found ({} icons)", found, g_icons.size());
-}
-
-// Writes the icons' values for the current state. Caller holds g_mutex.
-void ApplyIcons(const std::string& state) {
-  if (g_icons.empty() || !g_font) return;
-  const bool scanned = std::any_of(g_value_at.begin(), g_value_at.end(),
-                                   [](const auto& at) { return !at.empty(); });
-  if (!scanned) {
-    if (g_scans >= 20 || std::chrono::steady_clock::now() - g_library_loaded <
-                             std::chrono::seconds(2 + 2 * g_scans))
-      return;
-    ++g_scans;
-    FindValues();
-    g_icon_state.clear();
-  }
-  if (state == g_icon_state) return;
-  g_icon_state = state;
-  const bool keyboard = state != "controller";
-  const bool mouse = MouseLook();
-  for (const icon_library::Icon& icon : g_icons) {
-    const std::vector<int32_t> values = icon_library::IconValues(
-        icon, keyboard_prompts::IconLabel(icon.name, Keybind, mouse), keyboard, g_font);
-    for (size_t f = 0; f < values.size(); ++f) {
-      for (uint32_t at : g_value_at[icon.first_id + f]) {
-        if (!Committed(at) || !IsValueAt(at)) continue;
-        const uint32_t v = static_cast<uint32_t>(values[f]);
-        const uint8_t bytes[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
-        std::memcpy(g_base + at, bytes, 4);
-      }
-    }
-  }
+  REXLOG_INFO("[prompts] icons: {} values written ({})", written, keyboard ? "keyboard" : "controller");
 }
 
 void ApplyAll() {
+  std::vector<Library> libraries;
+  std::string icon_state;
+  {
+    std::lock_guard lock(g_mutex);
+    if (!g_base) return;
+    const std::string state = CurrentState();
+    // Icons: when the state changed, once each library has had a moment to be read by the game.
+    const auto now = std::chrono::steady_clock::now();
+    bool due = false, settled = true;
+    for (const Library& library : g_libraries) {
+      if (library.state != state) due = true;
+      if (now - library.loaded < std::chrono::seconds(2)) settled = false;
+    }
+    if (due && settled && g_font) {
+      for (Library& library : g_libraries) library.state = state;
+      libraries = g_libraries;
+      icon_state = state;
+    }
+  }
+  if (!libraries.empty()) ApplyIcons(libraries, icon_state);
   std::lock_guard lock(g_mutex);
-  if (!g_base) return;
   const std::string state = CurrentState();
-  ApplyIcons(state);
   if (state == g_state) return;
   g_state = state;
   const bool keyboard = state != "controller";
@@ -403,7 +415,7 @@ bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
   return true;
 }
 
-void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
+void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file, const std::string& url) {
   g_base = base;
   const uint32_t data = Load32(file + kFileBuffer);
   const uint32_t size = Load32(file + kFileSize);
@@ -418,10 +430,27 @@ void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
     return;
   }
   const bool mouse = MouseLook();
+  // The library's slot: the same file keeps its slot when the game loads it again.
+  size_t slot;
+  std::string state;
+  {
+    std::lock_guard lock(g_mutex);
+    state = CurrentState();
+    slot = std::find_if(g_libraries.begin(), g_libraries.end(),
+                        [&](const Library& l) { return l.url == url; }) - g_libraries.begin();
+    if (slot == g_libraries.size()) {
+      if (slot >= 0x10000 / icon_library::kIdsPerLibrary) {
+        REXLOG_WARN("[prompts] icon library {}: too many libraries", url);
+        return;
+      }
+      g_libraries.push_back({url, {}, state, {}});
+    }
+  }
   const icon_library::Result result = icon_library::RewriteIconLibrary(
       g_base + data, size,
       [mouse](std::string_view icon) { return keyboard_prompts::IconLabel(icon, Keybind, mouse); },
-      static_cast<const uint8_t*>(font), font_size, KeyboardPromptsWanted());
+      static_cast<const uint8_t*>(font), font_size, state != "controller",
+      static_cast<uint16_t>(slot * icon_library::kIdsPerLibrary));
   if (result.movie.empty()) {
     REXLOG_WARN("[prompts] icon library kept as it is: {}", result.error);
     return;
@@ -446,17 +475,14 @@ void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
   ctx = saved;
   {
     std::lock_guard lock(g_mutex);
-    g_icons = result.list;
+    Library& library = g_libraries[slot];
+    library.icons = result.list;
+    library.state = state;
+    library.loaded = std::chrono::steady_clock::now();
     g_font = static_cast<const uint8_t*>(font);
-    g_library_copy = copy;
-    g_library_size = static_cast<uint32_t>(result.movie.size());
-    g_library_loaded = std::chrono::steady_clock::now();
-    g_value_at.clear();
-    g_scans = 0;
-    g_icon_state.clear();
   }
-  REXLOG_INFO("[prompts] icon library: {} button icons show keys ({} -> {} bytes)", result.icons,
-              size, result.movie.size());
+  REXLOG_INFO("[prompts] icon library {}: {} button icons show keys ({} -> {} bytes)", url,
+              result.icons, size, result.movie.size());
 }
 
 }  // namespace
@@ -475,6 +501,6 @@ REX_HOOK_RAW(sub_8274C3F0) {
     if (ts) g_memory = ts->memory();
   }
   const PPCContext saved = ctx;
-  ReplaceIconLibrary(ctx, base, file);
+  ReplaceIconLibrary(ctx, base, file, url);
   ctx = saved;
 }

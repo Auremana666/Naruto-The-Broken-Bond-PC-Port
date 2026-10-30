@@ -670,7 +670,8 @@ std::vector<uint8_t> IconScript(const Icon& icon, const std::vector<int32_t>& v)
 }  // namespace
 
 Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& labels,
-                          const uint8_t* font_data, size_t font_size, bool keyboard) {
+                          const uint8_t* font_data, size_t font_size, bool keyboard,
+                          uint16_t first_id) {
   Result result;
   if (size < 8 || data[1] != 'F' || data[2] != 'X') {
     result.error = "not a Scaleform movie";
@@ -816,7 +817,8 @@ Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& l
     Icon icon;
     icon.name = icon_name;
     icon.label_box = KeycapFace(KeycapBounds(box));
-    icon.first_id = static_cast<uint16_t>(result.list.size() * kFields);
+    if ((result.list.size() + 1) * kFields > kIdsPerLibrary) break;
+    icon.first_id = static_cast<uint16_t>(first_id + result.list.size() * kFields);
     std::vector<Tag> frames;
     Tag place{kPlaceObject2, {}};
     PlaceNamed(&place.data, 1, original_id, "o");
