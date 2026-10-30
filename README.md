@@ -36,6 +36,19 @@ The first start can take a moment while Windows scans the new program.
 **Steam Deck / Linux:** add `Naruto The Broken Bond PC.exe` to Steam as a non-Steam game and run
 it with Proton (see [Steam Deck](#steam-deck)).
 
+## What's new in v2.6
+
+- **Curse marks fixed:** the curse marks show black again on every character, Kimimaro's chest
+  mark included.
+- **Sasuke's Sharingan fixed:** it no longer stays on all the time.
+- **Free camera moved to key 7.**
+- **Slow motion:** Game Speed (PC Options > Cheats) now also has 0.25X, 0.5X and 0.75X. Hold
+  **Numpad +** to play in slow motion or faster, the frame rate stays smooth.
+- Cheats with a key (Free Camera, Game Speed): left / right change them, Enter or a click opens
+  Shortcut Keys on that key.
+
+Found another bug? Open an issue and tell us.
+
 ## What's new in v2.5
 
 ![Free camera](docs/images/free-camera.jpg)
@@ -212,8 +225,8 @@ anti-aliasing OFF.
 |---|---|
 | PC Options | F1 (or Back + Start) |
 | FPS counter | F2 |
-| Free camera on / off | 6 |
-| Speed up (hold) | Numpad + |
+| Free camera on / off | 7 |
+| Game speed: faster or slow motion (hold) | Numpad + |
 | Log files on / off | Ctrl + F12 |
 
 All keys can be changed in **PC Options > Controls > Key Bindings** and **PC Options > Shortcut Keys**.
@@ -265,6 +278,7 @@ you can send a few Ryō my way on Ko-fi. Thank you, believe it!
 | Native Direct3D 12 renderer: draws, shaders, textures, frame interpolation, frame rate, resolution, MSAA, FXAA, CAS / FSR, graphics cache | jorjbarbosa (first written for [naruto-rise-recomp](https://github.com/jorjbarbosa/naruto-rise-recomp)) |
 | PC Options menu, key and controller remapping (toggle / turbo), keyboard as player 1 or 2, Auto Jutsu, unlocks, intro skip, PC title screen, Save Backup Tool | this port (first made for v1, moved to v2) |
 | Field of view, ultrawide that widens the view, mouse camera | this port |
+| v2.6: curse mark and Sharingan fixes (shader gradients, hidden layers), slow motion, free camera on 7 | this port |
 | v2.5: weather, free camera, speed up, Hokage skins, live graphics options, Steam Deck fixes (shaders under Proton, crash guard), trap jutsu fix | this port |
 | Menu overlay on the native renderer, Skip Unready Graphics option, Anti-aliasing OFF fix, render-thread speedups, performance log, window close fixes | this port, changes inside his renderer |
 | v1 recompilation and its emulated graphics | this port, on the ReXGlue SDK with patches from naruto-rise-recomp |

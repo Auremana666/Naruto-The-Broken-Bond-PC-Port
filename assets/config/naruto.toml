@@ -78,7 +78,7 @@ bind_fps_counter = "F2"
 unlock_all_characters = false
 unlock_all_arenas = false
 weather = "game"
-# Speed up: hold this key to run the game faster (2 to 8 times), for cutscenes you cannot skip.
+# Game speed: hold this key to run the game faster (2 to 8) or in slow motion (0.25, 0.5, 0.75).
 bind_speed_up = "NumpadPlus"
 speed_up_factor = "4"
 # Free camera: this key freezes the game and flies the camera around.
