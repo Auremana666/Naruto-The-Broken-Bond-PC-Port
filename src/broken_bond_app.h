@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 
 #include <fmt/chrono.h>
 #include <imgui.h>
@@ -90,9 +91,13 @@ class BrokenBondApp : public rex::ReXApp {
     std::error_code ec;
     std::filesystem::create_directories(paths.user_data_root, ec);
 
+    // The SDK reads naruto.toml only after the paths, so the game_data_root saved there by the
+    // picker is read here.
+    if (paths.game_data_root.empty()) paths.game_data_root = SavedGameLocation(exe_dir / "naruto.toml");
     if (!paths.game_data_root.empty() && std::filesystem::exists(paths.game_data_root)) {
       return;
     }
+    paths.game_data_root.clear();
 
     for (const auto& folder : {exe_dir / "assets", exe_dir}) {
       for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
@@ -120,6 +125,24 @@ class BrokenBondApp : public rex::ReXApp {
       rex::cvar::SetFlagByName("game_data_root", paths.game_data_root.string());
       SaveSettings(exe_dir / "naruto.toml", {"game_data_root"});
     }
+  }
+
+  // game_data_root = "..." in the settings file (TOML basic string), or empty.
+  static std::filesystem::path SavedGameLocation(const std::filesystem::path& config) {
+    std::ifstream in(config);
+    for (std::string line; std::getline(in, line);) {
+      const auto first = line.find_first_not_of(" \t");
+      if (first == std::string::npos || line.compare(first, 14, "game_data_root") != 0) continue;
+      const auto open = line.find('"', first);
+      if (open == std::string::npos) continue;
+      std::string value;
+      for (size_t i = open + 1; i < line.size() && line[i] != '"'; ++i) {
+        if (line[i] == '\\' && i + 1 < line.size()) ++i;
+        value += line[i];
+      }
+      return std::filesystem::u8path(value);
+    }
+    return {};
   }
 
   // The window is titled with the game's name from the start (before the game is found).
