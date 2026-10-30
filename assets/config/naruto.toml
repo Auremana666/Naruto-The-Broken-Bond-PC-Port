@@ -36,8 +36,8 @@ mnk_mode = true
 # Player the keyboard controls when a controller is connected: auto (shares player 1), 1 or 2
 keyboard_player = "auto"
 mnk_mouse = true
-# Button prompts in the game's text: auto (your keys while no controller is connected), keyboard
-# ("Press [Space] to jump") or controller (the Xbox buttons).
+# Button prompts in the game's text and icons: auto (the keys or the Xbox buttons, by what you
+# pressed last), keyboard ("Press [Space] to jump") or controller (the Xbox buttons).
 button_prompts = "auto"
 mnk_sensitivity = 1.0
 keybind_lstick_up = "W"

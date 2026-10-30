@@ -24,6 +24,8 @@ enum : uint16_t {
   kEnd = 0,
   kShowFrame = 1,
   kDefineShape = 2,
+  kDoAction = 12,
+  kRemoveObject2 = 28,
   kPlaceObject2 = 26,
   kDefineShape2 = 22,
   kDefineShape3 = 32,
@@ -88,9 +90,6 @@ void WriteTags(const std::vector<Tag>& tags, std::vector<uint8_t>* out) {
 }
 
 // Reads a RECT (twips) at the start of p.
-struct Rect {
-  int32_t x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-};
 
 class BitReader {
  public:
@@ -351,19 +350,29 @@ bool LabelContours(const stbtt_fontinfo& font, const std::string& label, double 
   return true;
 }
 
+// Bumpers and triggers are narrow slivers in the original art: give them a square cap of the
+// same height or width, centred where the icon was. Wide pills (Start, Back) stay wide.
+Rect KeycapBounds(const Rect& original) {
+  Rect b = original;
+  const int32_t w = b.x1 - b.x0, h = b.y1 - b.y0;
+  const double aspect = h ? double(w) / h : 1.0;
+  if (aspect > 0.4 && aspect < 2.5) {
+    const int32_t side = std::max(w, h), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    b = {cx - side / 2, cx + side / 2, cy - side / 2, cy + side / 2};
+  }
+  return b;
+}
+
+// The face of the keycap inside its border, where the label goes.
+Rect KeycapFace(const Rect& b) {
+  const double m = std::min(b.x1 - b.x0, b.y1 - b.y0);
+  const int32_t in = static_cast<int32_t>(std::lround(m * 0.04 + m * 0.08));
+  return {b.x0 + in, b.x1 - in, b.y0 + in, b.y1 - in};
+}
+
 std::vector<uint8_t> KeycapShape(uint16_t id, const Rect& original, const std::string& label,
                                  const Style& style, const stbtt_fontinfo& font) {
-  // Bumpers and triggers are narrow slivers in the original art: give them a square cap of the
-  // same height or width, centred where the icon was. Wide pills (Start, Back) stay wide.
-  Rect b = original;
-  {
-    const int32_t w = b.x1 - b.x0, h = b.y1 - b.y0;
-    const double aspect = h ? double(w) / h : 1.0;
-    if (aspect > 0.4 && aspect < 2.5) {
-      const int32_t side = std::max(w, h), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-      b = {cx - side / 2, cx + side / 2, cy - side / 2, cy + side / 2};
-    }
-  }
+  const Rect b = KeycapBounds(original);
   const double w = b.x1 - b.x0, h = b.y1 - b.y0, m = std::min(w, h);
   const double inset = m * 0.04, border = m * 0.08, radius = m * 0.24;
   std::vector<Contour> contours;
@@ -381,6 +390,30 @@ std::vector<uint8_t> KeycapShape(uint16_t id, const Rect& original, const std::s
 bool IsShapeOrText(uint16_t code) {
   return code == kDefineShape || code == kDefineShape2 || code == kDefineShape3 ||
          code == kDefineShape4 || code == kDefineText || code == kDefineText2;
+}
+
+// The size in bytes of the MATRIX at the start of p.
+size_t MatrixSize(const uint8_t* p, size_t size) {
+  BitReader r(p, size);
+  size_t bits = 0;
+  auto read = [&](int n) {
+    bits += n;
+    return r.U(n);
+  };
+  if (read(1)) {
+    const int n = static_cast<int>(read(5));
+    read(n);
+    read(n);
+  }
+  if (read(1)) {
+    const int n = static_cast<int>(read(5));
+    read(n);
+    read(n);
+  }
+  const int n = static_cast<int>(read(5));
+  read(n);
+  read(n);
+  return std::min(size, (bits + 7) / 8);
 }
 
 // The character a PlaceObject2/3 places, and where its id is stored (0 if none).
@@ -401,10 +434,243 @@ size_t PlacedCharacterOffset(const Tag& t) {
   return 0;
 }
 
+
+// Key labels are drawn letter by letter: one sprite with a frame per printable character (frame
+// 1 empty, frame c - 31 for c in '!'..'~'), its glyph kGlyphHeight twips tall from ascent to
+// descent, origin on the baseline at the pen.
+constexpr int kFirstChar = 33, kLastChar = 126;
+constexpr double kGlyphHeight = 2000.0;
+constexpr uint32_t kLabelColor = 0x1E1E1EFF;
+
+double GlyphScale(const stbtt_fontinfo& font) {
+  int ascent = 0, descent = 0, gap = 0;
+  stbtt_GetFontVMetrics(&font, &ascent, &descent, &gap);
+  return ascent > descent ? kGlyphHeight / (ascent - descent) : 1.0;
+}
+
+int CharFrame(int cp) { return cp >= kFirstChar && cp <= kLastChar ? cp - kFirstChar + 2 : 1; }
+
+// One glyph as a shape (fill 1 on the left of every edge, as LabelContours draws it).
+bool GlyphShape(uint16_t id, const stbtt_fontinfo& font, int cp, std::vector<uint8_t>* out) {
+  const double g = GlyphScale(font);
+  auto X = [&](double v) { return static_cast<int32_t>(std::lround(v * g)); };
+  auto Y = [&](double v) { return static_cast<int32_t>(std::lround(-v * g)); };
+  stbtt_vertex* verts = nullptr;
+  const int n = stbtt_GetCodepointShape(&font, cp, &verts);
+  std::vector<Contour> contours;
+  Rect box{INT32_MAX, INT32_MIN, INT32_MAX, INT32_MIN};
+  auto grow = [&](int32_t x, int32_t y) {
+    box.x0 = std::min(box.x0, x);
+    box.x1 = std::max(box.x1, x);
+    box.y0 = std::min(box.y0, y);
+    box.y1 = std::max(box.y1, y);
+  };
+  auto close = [&]() {
+    if (!contours.empty()) {
+      Contour& c = contours.back();
+      if (c.edges.empty() || c.edges.back().x != c.x || c.edges.back().y != c.y)
+        c.edges.push_back({false, 0, 0, c.x, c.y});
+    }
+  };
+  for (int i = 0; i < n; ++i) {
+    const stbtt_vertex& v = verts[i];
+    const int32_t x = X(v.x), y = Y(v.y);
+    grow(x, y);
+    if (v.type == STBTT_vmove) {
+      close();
+      contours.push_back({});
+      contours.back().x = x;
+      contours.back().y = y;
+      contours.back().fill0 = 1;
+      contours.back().fill1 = 0;
+    } else if (contours.empty()) {
+      continue;
+    } else if (v.type == STBTT_vline) {
+      contours.back().edges.push_back({false, 0, 0, x, y});
+    } else if (v.type == STBTT_vcurve) {
+      contours.back().edges.push_back({true, X(v.cx), Y(v.cy), x, y});
+    } else if (v.type == STBTT_vcubic) {
+      contours.back().edges.push_back(
+          {true, X((v.cx + v.cx1) / 2.0), Y((v.cy + v.cy1) / 2.0), x, y});
+    }
+  }
+  close();
+  stbtt_FreeShape(&font, verts);
+  if (contours.empty()) return false;
+  *out = DefineShape3(id, box, {kLabelColor}, contours);
+  return true;
+}
+
+void PlaceNamed(std::vector<uint8_t>* out, uint16_t depth, uint16_t character,
+                const std::string& name) {
+  out->push_back(0x02 | 0x20);  // has character, has name
+  PutU16(out, depth);
+  PutU16(out, character);
+  out->insert(out->end(), name.begin(), name.end());
+  out->push_back(0);
+}
+
+// The sprite of the label letters, after the shapes it shows.
+std::vector<Tag> GlyphSprite(uint16_t sprite_id, uint16_t* next_id, const stbtt_fontinfo& font) {
+  std::vector<Tag> defs;
+  std::vector<Tag> frames;
+  frames.push_back({kShowFrame, {}});  // frame 1: empty
+  bool placed = false;
+  for (int cp = kFirstChar; cp <= kLastChar; ++cp) {
+    if (placed) {
+      Tag remove{kRemoveObject2, {}};
+      PutU16(&remove.data, 1);
+      frames.push_back(std::move(remove));
+      placed = false;
+    }
+    std::vector<uint8_t> shape;
+    const uint16_t id = *next_id;
+    if (GlyphShape(id, font, cp, &shape)) {
+      ++*next_id;
+      defs.push_back({kDefineShape3, std::move(shape)});
+      Tag place{kPlaceObject2, {0x02}};
+      PutU16(&place.data, 1);
+      PutU16(&place.data, id);
+      frames.push_back(std::move(place));
+      placed = true;
+    }
+    frames.push_back({kShowFrame, {}});
+  }
+  frames.push_back({kEnd, {}});
+  Tag sprite{kDefineSprite, {}};
+  PutU16(&sprite.data, sprite_id);
+  PutU16(&sprite.data, static_cast<uint16_t>(kLastChar - kFirstChar + 2));
+  WriteTags(frames, &sprite.data);
+  defs.push_back(std::move(sprite));
+  return defs;
+}
+
+// The icon's script (see icon_library.h). Positions in twips and scales in hundredths of a
+// percent are divided in the script, so the written numbers stay integers.
+class Script {
+ public:
+  explicit Script(uint16_t first_id) : first_id_(first_id) {}
+  void Value(int field, int32_t value) {
+    Push(kMarker | uint16_t(first_id_ + field));
+    code_.push_back(0x17);  // pop
+    Push(static_cast<uint32_t>(value));
+  }
+  void SetProperty(const std::string& target, int property, int field, int32_t value, int divisor) {
+    code_.push_back(0x96);  // push target, property
+    PutU16(&code_, static_cast<uint16_t>(1 + target.size() + 1 + 1 + 4));
+    code_.push_back(0x00);
+    code_.insert(code_.end(), target.begin(), target.end());
+    code_.push_back(0);
+    code_.push_back(0x07);
+    PutU32(&code_, static_cast<uint32_t>(property));
+    Value(field, value);
+    if (divisor > 1) {
+      Push(static_cast<uint32_t>(divisor));
+      code_.push_back(0x0D);  // divide
+    }
+    code_.push_back(0x23);  // set property
+  }
+  void GotoAndStop(const std::string& target, int field, int32_t frame) {
+    SetTarget(target);
+    Value(field, frame);
+    code_.push_back(0x9F);  // goto frame 2, stop
+    PutU16(&code_, 1);
+    code_.push_back(0x00);
+    SetTarget("");
+  }
+  std::vector<uint8_t> Finish() {
+    code_.push_back(0x00);
+    return std::move(code_);
+  }
+
+ private:
+  void Push(uint32_t v) {
+    code_.push_back(0x96);
+    PutU16(&code_, 5);
+    code_.push_back(0x07);
+    PutU32(&code_, v);
+  }
+  void SetTarget(const std::string& target) {
+    code_.push_back(0x8B);
+    PutU16(&code_, static_cast<uint16_t>(target.size() + 1));
+    code_.insert(code_.end(), target.begin(), target.end());
+    code_.push_back(0);
+  }
+  uint16_t first_id_;
+  std::vector<uint8_t> code_;
+};
+
+constexpr int kPropX = 0, kPropY = 1, kPropXScale = 2, kPropYScale = 3, kPropVisible = 7;
+
+std::vector<int32_t> Values(const Icon& icon, const std::string& label, bool keyboard,
+                            const stbtt_fontinfo& font) {
+  std::vector<int32_t> v(kFields, 0);
+  v[0] = 1;
+  for (int s = 0; s < kSlots; ++s) {
+    v[2 + s * 5] = 1;
+    v[2 + s * 5 + 3] = 10000;
+  }
+  if (!keyboard || label.empty()) return v;
+  // Layout in font units, as LabelContours.
+  std::vector<std::pair<int, double>> placed;
+  double pen = 0, minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+  for (size_t i = 0; i < label.size() && placed.size() < size_t(kSlots); ++i) {
+    const int cp = static_cast<unsigned char>(label[i]);
+    int advance = 0, lsb = 0, bx0, by0, bx1, by1;
+    stbtt_GetCodepointHMetrics(&font, cp, &advance, &lsb);
+    if (stbtt_GetCodepointBox(&font, cp, &bx0, &by0, &bx1, &by1)) {
+      minx = std::min(minx, pen + bx0);
+      maxx = std::max(maxx, pen + bx1);
+      miny = std::min(miny, double(by0));
+      maxy = std::max(maxy, double(by1));
+    }
+    placed.push_back({cp, pen});
+    pen += advance;
+    if (i + 1 < label.size())
+      pen += stbtt_GetCodepointKernAdvance(&font, cp, static_cast<unsigned char>(label[i + 1]));
+  }
+  if (maxx <= minx || maxy <= miny) return v;
+  const Rect& f = icon.label_box;
+  const double lw = (f.x1 - f.x0) * 0.84, lh = (f.y1 - f.y0) * (placed.size() == 1 ? 0.62 : 0.5);
+  const double k = std::min(lw / (maxx - minx), lh / (maxy - miny));
+  const double cx = (f.x0 + f.x1) / 2.0, cy = (f.y0 + f.y1) / 2.0;
+  const double ux = (minx + maxx) / 2, uy = (miny + maxy) / 2;
+  const int32_t scale = static_cast<int32_t>(std::lround(k / GlyphScale(font) * 10000.0));
+  v[0] = 0;
+  v[1] = 1;
+  for (size_t s = 0; s < placed.size(); ++s) {
+    int32_t* slot = &v[2 + s * 5];
+    slot[0] = CharFrame(placed[s].first);
+    slot[1] = static_cast<int32_t>(std::lround(cx + (placed[s].second - ux) * k));
+    slot[2] = static_cast<int32_t>(std::lround(cy + uy * k));
+    slot[3] = scale;
+    slot[4] = 1;
+  }
+  return v;
+}
+
+// The icon's script on its first frame, with its values as they start.
+std::vector<uint8_t> IconScript(const Icon& icon, const std::vector<int32_t>& v) {
+  Script script(icon.first_id);
+  script.SetProperty("o", kPropVisible, 0, v[0], 1);
+  script.SetProperty("k", kPropVisible, 1, v[1], 1);
+  for (int s = 0; s < kSlots; ++s) {
+    const std::string g = "k/g" + std::to_string(s);
+    const int f = 2 + s * 5;
+    script.GotoAndStop(g, f, v[f]);
+    script.SetProperty(g, kPropX, f + 1, v[f + 1], 20);
+    script.SetProperty(g, kPropY, f + 2, v[f + 2], 20);
+    script.SetProperty(g, kPropXScale, f + 3, v[f + 3], 100);
+    script.SetProperty(g, kPropYScale, f + 3, v[f + 3], 100);
+    script.SetProperty(g, kPropVisible, f + 4, v[f + 4], 1);
+  }
+  return script.Finish();
+}
+
 }  // namespace
 
 Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& labels,
-                          const uint8_t* font_data, size_t font_size) {
+                          const uint8_t* font_data, size_t font_size, bool keyboard) {
   Result result;
   if (size < 8 || data[1] != 'F' || data[2] != 'X') {
     result.error = "not a Scaleform movie";
@@ -480,13 +746,16 @@ Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& l
     }
   }
 
-  // New keycap shapes, by the index of the sprite tag they go in front of.
+  // New definitions, by the index of the sprite tag they go in front of.
   std::multimap<size_t, Tag> inserts;
   uint16_t next_id = static_cast<uint16_t>(max_id + 1);
+  const uint16_t glyphs_id = next_id++;
+  std::vector<Tag> glyphs = GlyphSprite(glyphs_id, &next_id, font);
+  size_t first_icon = SIZE_MAX;
   for (const auto& [name, sprite_id] : exports) {
     if (name.compare(0, kPrefix.size(), kPrefix) != 0) continue;
-    const std::string icon = name.substr(kPrefix.size());
-    const std::string label = labels(icon);
+    const std::string icon_name = name.substr(kPrefix.size());
+    const std::string label = labels(icon_name);
     if (label.empty()) continue;
     auto st = sprite_tag.find(sprite_id);
     if (st == sprite_tag.end()) continue;
@@ -495,36 +764,81 @@ Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& l
     std::vector<Tag> inner;
     if (!ParseTags(sprite.data.data() + 4, sprite.data.size() - 4, &inner)) continue;
     // The largest shape the sprite shows is the button itself.
-    size_t main = SIZE_MAX;
     int64_t best = -1;
-    for (size_t i = 0; i < inner.size(); ++i) {
-      const size_t off = PlacedCharacterOffset(inner[i]);
+    Rect box;
+    std::vector<uint8_t> matrix;  // where the sprite places that shape
+    for (const Tag& t : inner) {
+      const size_t off = PlacedCharacterOffset(t);
       if (!off) continue;
-      auto b = bounds.find(U16(inner[i].data.data() + off));
+      auto b = bounds.find(U16(t.data.data() + off));
       if (b == bounds.end()) continue;
       const int64_t area = int64_t(b->second.x1 - b->second.x0) * (b->second.y1 - b->second.y0);
       if (area > best) {
         best = area;
-        main = i;
+        box = b->second;
+        matrix.clear();
+        if (t.data[0] & 0x04) {
+          const size_t len = MatrixSize(t.data.data() + off + 2, t.data.size() - off - 2);
+          matrix.assign(t.data.begin() + off + 2, t.data.begin() + off + 2 + len);
+        }
       }
     }
-    if (main == SIZE_MAX) continue;
-    const size_t off = PlacedCharacterOffset(inner[main]);
-    const Rect box = bounds[U16(inner[main].data.data() + off)];
-    const uint16_t shape_id = next_id++;
-    inserts.emplace(st->second, Tag{kDefineShape3, KeycapShape(shape_id, box, label,
-                                                                StyleFor(icon), font)});
-    inner[main].data[off] = static_cast<uint8_t>(shape_id);
-    inner[main].data[off + 1] = static_cast<uint8_t>(shape_id >> 8);
-    // Drop everything else the sprite placed (letters, arrows, the START/BACK text).
-    std::vector<Tag> kept;
-    for (size_t i = 0; i < inner.size(); ++i) {
-      if (i != main && (inner[i].code == kPlaceObject2 || inner[i].code == kPlaceObject3)) continue;
-      kept.push_back(std::move(inner[i]));
+    if (best < 0) continue;
+    // The original look moves into a sprite of its own ("o"); the keycap without its label and
+    // the letters ("g0".."g7") go on top in a sprite ("k") placed where the button was, and the
+    // icon loops over two frames so its script keeps applying the values.
+    const uint16_t original_id = next_id++, cap_id = next_id++, keycap_id = next_id++;
+    Tag original{kDefineSprite, {}};
+    PutU16(&original.data, original_id);
+    PutU16(&original.data, 1);
+    original.data.insert(original.data.end(), sprite.data.begin() + 4, sprite.data.end());
+    inserts.emplace(st->second, std::move(original));
+    inserts.emplace(st->second, Tag{kDefineShape3, KeycapShape(cap_id, box, "", StyleFor(icon_name), font)});
+
+    std::vector<Tag> cap_frames;
+    Tag cap_place{kPlaceObject2, {0x02}};
+    PutU16(&cap_place.data, 1);
+    PutU16(&cap_place.data, cap_id);
+    cap_frames.push_back(std::move(cap_place));
+    for (int s = 0; s < kSlots; ++s) {
+      Tag slot{kPlaceObject2, {}};
+      PlaceNamed(&slot.data, static_cast<uint16_t>(2 + s), glyphs_id, "g" + std::to_string(s));
+      cap_frames.push_back(std::move(slot));
     }
-    std::vector<uint8_t> sprite_data(sprite.data.begin(), sprite.data.begin() + 4);
-    WriteTags(kept, &sprite_data);
+    cap_frames.push_back({kShowFrame, {}});
+    cap_frames.push_back({kEnd, {}});
+    Tag keycap{kDefineSprite, {}};
+    PutU16(&keycap.data, keycap_id);
+    PutU16(&keycap.data, 1);
+    WriteTags(cap_frames, &keycap.data);
+    inserts.emplace(st->second, std::move(keycap));
+
+    Icon icon;
+    icon.name = icon_name;
+    icon.label_box = KeycapFace(KeycapBounds(box));
+    icon.first_id = static_cast<uint16_t>(result.list.size() * kFields);
+    std::vector<Tag> frames;
+    Tag place{kPlaceObject2, {}};
+    PlaceNamed(&place.data, 1, original_id, "o");
+    frames.push_back(place);
+    place.data = {static_cast<uint8_t>(0x02 | 0x20 | (matrix.empty() ? 0 : 0x04))};
+    PutU16(&place.data, 2);
+    PutU16(&place.data, keycap_id);
+    place.data.insert(place.data.end(), matrix.begin(), matrix.end());
+    for (char c : std::string("k")) place.data.push_back(static_cast<uint8_t>(c));
+    place.data.push_back(0);
+    frames.push_back(place);
+    frames.push_back({kDoAction, IconScript(icon, Values(icon, label, keyboard, font))});
+    frames.push_back({kShowFrame, {}});
+    frames.push_back({kShowFrame, {}});
+    frames.push_back({kEnd, {}});
+    std::vector<uint8_t> sprite_data;
+    PutU16(&sprite_data, sprite_id);
+    PutU16(&sprite_data, 2);
+    WriteTags(frames, &sprite_data);
     sprite.data = std::move(sprite_data);
+    first_icon = std::min(first_icon, st->second);
+    result.list.push_back(std::move(icon));
     ++result.icons;
   }
   if (result.icons == 0) {
@@ -535,6 +849,8 @@ Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& l
   std::vector<Tag> rebuilt;
   rebuilt.reserve(tags.size() + inserts.size());
   for (size_t i = 0; i < tags.size(); ++i) {
+    if (i == first_icon)
+      for (Tag& t : glyphs) rebuilt.push_back(std::move(t));
     auto [lo, hi] = inserts.equal_range(i);
     for (auto it = lo; it != hi; ++it) rebuilt.push_back(std::move(it->second));
     rebuilt.push_back(std::move(tags[i]));
@@ -546,6 +862,14 @@ Result RewriteIconLibrary(const uint8_t* data, size_t size, const LabelLookup& l
   PutU32(&result.movie, static_cast<uint32_t>(out_body.size() + 8));
   result.movie.insert(result.movie.end(), out_body.begin(), out_body.end());
   return result;
+}
+
+std::vector<int32_t> IconValues(const Icon& icon, const std::string& label, bool keyboard,
+                                const uint8_t* font_data) {
+  stbtt_fontinfo font;
+  if (!font_data || !stbtt_InitFont(&font, font_data, stbtt_GetFontOffsetForIndex(font_data, 0)))
+    return {};
+  return Values(icon, label, keyboard, font);
 }
 
 }  // namespace icon_library

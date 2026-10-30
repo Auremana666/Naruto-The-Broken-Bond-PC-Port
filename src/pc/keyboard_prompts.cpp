@@ -10,15 +10,23 @@
 // lets the loader run, then walks the unit and swaps the text pointer of each line with a button
 // tag; the loaded file itself is never changed, so turning the option off points the lines back.
 //
+// In Automatic the prompts follow the device used last: a key or mouse button in the game's window
+// shows the keys, a controller button or stick shows the Xbox buttons.
+//
 // The rewritten copies live in a guest heap block of their own. The same text is only stored
 // once, so loading the unit again or rebinding a key adds a few new strings at most.
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -40,8 +48,8 @@
 #include "pad_input.h"
 
 REXCVAR_DEFINE_STRING(button_prompts, "auto", "Controls",
-                      "Button prompts in the game's text: auto (keyboard keys while no controller "
-                      "is connected), keyboard or controller")
+                      "Button prompts in the game's text and icons: auto (the device used last), "
+                      "keyboard or controller")
     .allowed({"auto", "keyboard", "controller"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(log_button_prompts, false, "Controls",
@@ -127,11 +135,40 @@ bool ControllerConnected() {
   return false;
 }
 
+// The device used last (Automatic): 0 not known yet, 1 keyboard and mouse, 2 controller.
+std::atomic<int> g_last_device{0};
+
+bool GameInFront() {
+  DWORD pid = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+  return pid == GetCurrentProcessId();
+}
+
+void NoteLastDevice() {
+  const PadRaw pad = ReadPadRaw();
+  constexpr int kStick = 12000;
+  if (pad.buttons || pad.left_trigger > 40 || pad.right_trigger > 40 || std::abs(pad.left_x) > kStick ||
+      std::abs(pad.left_y) > kStick || std::abs(pad.right_x) > kStick || std::abs(pad.right_y) > kStick) {
+    g_last_device.store(2);
+    return;
+  }
+  if (!GameInFront()) return;
+  for (int vk = 0x01; vk <= 0xFE; ++vk) {
+    if (vk == VK_PACKET) continue;
+    if (GetAsyncKeyState(vk) & 0x8000) {
+      g_last_device.store(1);
+      return;
+    }
+  }
+}
+
 bool KeyboardPromptsWanted() {
   const std::string mode = REXCVAR_GET(button_prompts);
   if (mode == "keyboard") return true;
   if (mode == "controller") return false;
-  return rex::cvar::GetFlagByName("mnk_mode") != "false" && !ControllerConnected();
+  if (rex::cvar::GetFlagByName("mnk_mode") == "false") return false;
+  const int last = g_last_device.load();
+  return last ? last == 1 : !ControllerConnected();
 }
 
 bool MouseLook() { return rex::cvar::GetFlagByName("mnk_mouse") == "true"; }
@@ -186,10 +223,89 @@ void Apply(Line& line, bool keyboard, bool mouse_look) {
   }
 }
 
+// The button icons (see the icon library part below): where the game's copy of each icon
+// script keeps its values, found once the library is loaded.
+std::vector<icon_library::Icon> g_icons;
+const uint8_t* g_font = nullptr;
+uint32_t g_library_copy = 0, g_library_size = 0;
+std::chrono::steady_clock::time_point g_library_loaded;
+std::vector<std::vector<uint32_t>> g_value_at;  // by marker id
+int g_scans = 0;
+std::string g_icon_state;
+
+// Whether a value follows "push marker; pop; push" there.
+bool IsValueAt(uint32_t value) {
+  const uint8_t* p = g_base + value - 13;
+  return p[0] == 0x96 && p[1] == 5 && p[2] == 0 && p[3] == 7 && p[6] == 0x5E && p[7] == 0x7E &&
+         p[8] == 0x17 && p[9] == 0x96 && p[10] == 5 && p[11] == 0 && p[12] == 7;
+}
+
+// Finds every icon value in the guest heap. Caller holds g_mutex.
+void FindValues() {
+  g_value_at.assign(g_icons.size() * icon_library::kFields, {});
+  size_t found = 0;
+  // Readable host pages only (the guest heaps' own bookkeeping does not say what is mapped).
+  auto readable = [](uint32_t page) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    return VirtualQuery(g_base + page, &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT &&
+           !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+  };
+  for (uint32_t page = 0x40000000u; page < 0x70000000u; page += 0x1000) {
+    if (!readable(page)) continue;
+    const uint8_t* p = g_base + page;
+    // A value may end on the next page.
+    const uint32_t end = readable(page + 0x1000) ? 0x1000 + 13 : 0x1000 - 4;
+    for (uint32_t i = 13; i < end; ++i) {
+      if (p[i - 7] != 0x5E || p[i - 6] != 0x7E) continue;
+      const uint32_t value = page + i;
+      if (!IsValueAt(value)) continue;
+      if (value >= g_library_copy && value < g_library_copy + g_library_size) continue;
+      const uint32_t id = p[i - 9] | (p[i - 8] << 8);
+      if (id < g_value_at.size()) {
+        g_value_at[id].push_back(value);
+        ++found;
+      }
+    }
+  }
+  REXLOG_INFO("[prompts] icon values: {} found ({} icons)", found, g_icons.size());
+}
+
+// Writes the icons' values for the current state. Caller holds g_mutex.
+void ApplyIcons(const std::string& state) {
+  if (g_icons.empty() || !g_font) return;
+  const bool scanned = std::any_of(g_value_at.begin(), g_value_at.end(),
+                                   [](const auto& at) { return !at.empty(); });
+  if (!scanned) {
+    if (g_scans >= 20 || std::chrono::steady_clock::now() - g_library_loaded <
+                             std::chrono::seconds(2 + 2 * g_scans))
+      return;
+    ++g_scans;
+    FindValues();
+    g_icon_state.clear();
+  }
+  if (state == g_icon_state) return;
+  g_icon_state = state;
+  const bool keyboard = state != "controller";
+  const bool mouse = MouseLook();
+  for (const icon_library::Icon& icon : g_icons) {
+    const std::vector<int32_t> values = icon_library::IconValues(
+        icon, keyboard_prompts::IconLabel(icon.name, Keybind, mouse), keyboard, g_font);
+    for (size_t f = 0; f < values.size(); ++f) {
+      for (uint32_t at : g_value_at[icon.first_id + f]) {
+        if (!Committed(at) || !IsValueAt(at)) continue;
+        const uint32_t v = static_cast<uint32_t>(values[f]);
+        const uint8_t bytes[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
+        std::memcpy(g_base + at, bytes, 4);
+      }
+    }
+  }
+}
+
 void ApplyAll() {
   std::lock_guard lock(g_mutex);
   if (!g_base) return;
   const std::string state = CurrentState();
+  ApplyIcons(state);
   if (state == g_state) return;
   g_state = state;
   const bool keyboard = state != "controller";
@@ -237,7 +353,8 @@ void StartWatcher() {
   if (g_watcher_started.exchange(true)) return;
   std::thread([] {
     for (;;) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      NoteLastDevice();
       ApplyAll();
     }
   }).detach();
@@ -266,9 +383,10 @@ REX_HOOK_RAW(sub_8275D500) {
 // Button icons. The interface movies import their button icons from one library,
 // _ExternalGenericIcons.gfx, which the game's file opener (sub_8274C3F0) loads whole into a memory
 // file: buffer at +0x210, size at +0x214, read position at +0x218 (its Read copies from there and
-// its Close frees the buffer). With keyboard prompts on, the buffer is swapped for a rewritten
-// library where each still button icon is a keycap with the bound key. The library is loaded once
-// when the game starts, so the icons follow the bindings and the option as they were then.
+// its Close frees the buffer). The buffer is swapped for a rewritten library where each still
+// button icon holds both the button and a keycap whose letters its script places (icon_library.h).
+// The library is loaded once when the game starts; the watcher then writes the icons' values into
+// the game's copy of their scripts whenever the device, the bindings or the option change.
 namespace {
 
 constexpr uint32_t kFileBuffer = 0x210, kFileSize = 0x214, kFilePosition = 0x218;
@@ -303,7 +421,7 @@ void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
   const icon_library::Result result = icon_library::RewriteIconLibrary(
       g_base + data, size,
       [mouse](std::string_view icon) { return keyboard_prompts::IconLabel(icon, Keybind, mouse); },
-      static_cast<const uint8_t*>(font), font_size);
+      static_cast<const uint8_t*>(font), font_size, KeyboardPromptsWanted());
   if (result.movie.empty()) {
     REXLOG_WARN("[prompts] icon library kept as it is: {}", result.error);
     return;
@@ -326,6 +444,17 @@ void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
   ctx.r3.u64 = data;
   __imp__sub_82120A70(ctx, base);
   ctx = saved;
+  {
+    std::lock_guard lock(g_mutex);
+    g_icons = result.list;
+    g_font = static_cast<const uint8_t*>(font);
+    g_library_copy = copy;
+    g_library_size = static_cast<uint32_t>(result.movie.size());
+    g_library_loaded = std::chrono::steady_clock::now();
+    g_value_at.clear();
+    g_scans = 0;
+    g_icon_state.clear();
+  }
   REXLOG_INFO("[prompts] icon library: {} button icons show keys ({} -> {} bytes)", result.icons,
               size, result.movie.size());
 }
@@ -341,9 +470,9 @@ REX_HOOK_RAW(sub_8274C3F0) {
   __imp__sub_8274C3F0(ctx, base);
   const uint32_t file = ctx.r3.u32;
   if (!file || !EndsWithNoCase(url, "_ExternalGenericIcons.gfx")) return;
-  if (!KeyboardPromptsWanted()) {
-    REXLOG_INFO("[prompts] icon library: controller icons");
-    return;
+  if (!g_memory) {
+    auto* ts = rex::runtime::ThreadState::Get();
+    if (ts) g_memory = ts->memory();
   }
   const PPCContext saved = ctx;
   ReplaceIconLibrary(ctx, base, file);

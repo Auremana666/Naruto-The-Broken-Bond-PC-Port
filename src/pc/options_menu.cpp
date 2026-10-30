@@ -459,8 +459,8 @@ void OptionsMenu::BuildPages() {
                                   {{"AUTOMATIC", "auto"},
                                    {"KEYBOARD", "keyboard"},
                                    {"CONTROLLER", "controller"}},
-                                  "Show the bound keys in the game's text instead of Xbox buttons. "
-                                  "Automatic: keys while no controller is connected."));
+                                  "Show the bound keys instead of Xbox buttons. Automatic: "
+                                  "keys or buttons, by what you pressed last."));
   controls.items.push_back(toggle("MOUSE MOVES CAMERA", "mnk_mouse"));
   {
     Item sens;
