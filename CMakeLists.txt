@@ -43,6 +43,7 @@ set(BROKENBOND_SOURCES
     src/pc/keyboard_prompts_core.cpp
     src/pc/icon_prompts.cpp
     src/pc/icon_library.cpp
+    src/pc/game_location.cpp
 )
 
 # The shipping native build uses the Rise renderer adapted to Broken Bond,
@@ -180,3 +181,19 @@ option(BROKENBOND_BUILD_LAUNCHER "Build the Windows launcher" ${WIN32})
 if(BROKENBOND_BUILD_LAUNCHER AND BROKENBOND_NATIVE_RENDERER)
     add_subdirectory(launcher)
 endif()
+
+# The decompression part of zstd (from XenosRecomp's dependencies), for .zar game archives
+# (src/pc/game_location.cpp).
+if(NOT BROKENBOND_XENOS_RECOMP_THIRDPARTY)
+    set(BROKENBOND_XENOS_RECOMP_THIRDPARTY "${CMAKE_CURRENT_SOURCE_DIR}/tools/xenosrecomp/thirdparty")
+endif()
+if(NOT CMAKE_C_COMPILER)
+    set(CMAKE_C_COMPILER clang)
+endif()
+enable_language(C)
+set(BROKENBOND_ZSTD "${BROKENBOND_XENOS_RECOMP_THIRDPARTY}/zstd/lib")
+file(GLOB BROKENBOND_ZSTD_SOURCES "${BROKENBOND_ZSTD}/common/*.c" "${BROKENBOND_ZSTD}/decompress/*.c")
+add_library(broken_bond_zstd STATIC ${BROKENBOND_ZSTD_SOURCES})
+target_include_directories(broken_bond_zstd PUBLIC "${BROKENBOND_ZSTD}")
+target_compile_definitions(broken_bond_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_MULTITHREAD=0)
+target_link_libraries(broken_bond PRIVATE broken_bond_zstd)

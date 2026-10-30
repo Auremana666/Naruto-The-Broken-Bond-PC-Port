@@ -38,6 +38,7 @@ void StopIdlePresenter();
 #include "pc/auto_jutsu.h"
 #include "pc/fps_counter.h"
 #include "pc/free_camera.h"
+#include "pc/game_location.h"
 #include "pc/game_speed.h"
 #include "pc/input_layout.h"
 #include "pc/mouse_camera.h"
@@ -77,9 +78,10 @@ class BrokenBondApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  // Finds the game when --game_data_root is not given: a disc image (.iso) in
+  // Finds the game when game_data_root is not set: a disc image (.iso) in
   // assets/ (or next to the executable), else extracted files in game/ or
-  // game_root/. Saves and other user data live in hdd/ next to the executable.
+  // game_root/, else asks where it is (PickGameLocation) and saves the answer as
+  // game_data_root. Saves and other user data live in hdd/ next to the executable.
   void OnConfigurePaths(rex::PathConfig& paths) override {
     const auto exe_dir = rex::filesystem::GetExecutableFolder();
     if (rex::cvar::GetFlagByName("user_data_root").empty()) {
@@ -111,6 +113,13 @@ class BrokenBondApp : public rex::ReXApp {
         return;
       }
     }
+
+    paths.game_data_root = PickGameLocation();
+    if (!paths.game_data_root.empty()) {
+      REXLOG_INFO("[narutobb] Game picked: {}", paths.game_data_root.string());
+      rex::cvar::SetFlagByName("game_data_root", paths.game_data_root.string());
+      SaveSettings(exe_dir / "naruto.toml", {"game_data_root"});
+    }
   }
 
   // The window is titled with the game's name from the start (before the game is found).
@@ -126,8 +135,9 @@ class BrokenBondApp : public rex::ReXApp {
       REXLOG_ERROR("[narutobb] No game files found");
       ShowGameError(
           "The game files were not found.\n\n"
-          "Put the game's ISO file (the Xbox 360 disc image) in the assets folder, or in the same "
-          "folder as Naruto The Broken Bond PC.exe, then start the game again.");
+          "Start the game again and pick the game's ISO file (the Xbox 360 disc image), its "
+          "default.xex, or an archive (ZIP, RAR, 7Z, ZAR) with one of them. You can also put the "
+          "ISO file in the assets folder.");
       return false;
     }
     return rex::ReXApp::ConstructRuntime(paths);
