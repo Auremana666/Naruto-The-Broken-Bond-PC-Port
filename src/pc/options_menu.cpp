@@ -455,6 +455,12 @@ void OptionsMenu::BuildPages() {
                                    {"PLAYER 1", "1"},
                                    {"PLAYER 2", "2"}},
                                   "With a controller connected, pick which player the keyboard is."));
+  controls.items.push_back(choice("BUTTON PROMPTS", "button_prompts",
+                                  {{"AUTOMATIC", "auto"},
+                                   {"KEYBOARD", "keyboard"},
+                                   {"CONTROLLER", "controller"}},
+                                  "Show the bound keys in the game's text instead of Xbox buttons. "
+                                  "Automatic: keys while no controller is connected."));
   controls.items.push_back(toggle("MOUSE MOVES CAMERA", "mnk_mouse"));
   {
     Item sens;

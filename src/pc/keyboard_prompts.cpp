@@ -1,0 +1,351 @@
+// Keyboard button prompts (PC Options > Controls > Button Prompts).
+//
+// The game's prompts are tags in its text ("Press <a> to jump."), which its Flash interface turns
+// into Xbox button icons. With keyboard prompts on, every line whose text has a button tag is
+// pointed at a copy where the tags are the bound keys ("Press [Space] to jump.").
+//
+// sub_8275D500 loads a text unit (one per language file, such as _fd190232.bin for English). It
+// returns a unit with the number of hash slots at +0 and the slot array at +4; each slot holds a
+// chain of 12-byte lines {id, text, next}. The text pointers point into the loaded file. The hook
+// lets the loader run, then walks the unit and swaps the text pointer of each line with a button
+// tag; the loaded file itself is never changed, so turning the option off points the lines back.
+//
+// The rewritten copies live in a guest heap block of their own. The same text is only stored
+// once, so loading the unit again or rebinding a key adds a few new strings at most.
+
+#include <array>
+#include <atomic>
+#include <bit>
+#include <chrono>
+#include <cstdint>
+#include <cctype>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <rex/cvar.h>
+#include <rex/hook.h>
+#include <rex/logging.h>
+#include <rex/system/thread_state.h>
+#include <rex/system/xmemory.h>
+
+#include "generated/default/broken_bond_init.h"
+#include "icon_library.h"
+#include "keyboard_prompts_core.h"
+#include "pad_input.h"
+
+REXCVAR_DEFINE_STRING(button_prompts, "auto", "Controls",
+                      "Button prompts in the game's text: auto (keyboard keys while no controller "
+                      "is connected), keyboard or controller")
+    .allowed({"auto", "keyboard", "controller"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(log_button_prompts, false, "Controls",
+                    "Log the text lines the keyboard prompts rewrite (diagnostics)");
+
+extern "C" void __imp__sub_8275D500(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8274C3F0(PPCContext& __restrict, uint8_t*);  // interface file opener
+extern "C" void __imp__sub_82120040(PPCContext& __restrict, uint8_t*);  // game malloc(size, 0)
+extern "C" void __imp__sub_82120A70(PPCContext& __restrict, uint8_t*);  // game free(ptr)
+
+namespace {
+
+constexpr uint32_t kMaxSlots = 1u << 16;
+constexpr uint32_t kMaxChain = 4096;
+constexpr uint32_t kMaxText = 4096;
+
+// A line whose text has a button tag: where its text pointer is, and what it pointed at.
+struct Line {
+  uint32_t entry;     // guest address of the {id, text, next} line
+  uint32_t original;  // the game's own text
+  uint32_t shown;     // what the line points at now (original or one of our copies)
+};
+
+std::mutex g_mutex;
+uint8_t* g_base = nullptr;
+rex::memory::Memory* g_memory = nullptr;
+std::vector<Line> g_lines;
+std::unordered_map<std::string, uint32_t> g_copies;  // rewritten text -> guest address
+std::unordered_set<uint32_t> g_copy_addresses;       // the guest addresses of those copies
+std::string g_state;                                  // bindings the copies were made for
+std::atomic<bool> g_watcher_started{false};
+
+bool ValidGuest(uint32_t address) { return address >= 0x40000000u && address < 0xA0000000u; }
+
+// Whether a guest page is committed, so reading a line that may have been freed is safe.
+bool Committed(uint32_t address) {
+  if (!ValidGuest(address)) return false;
+  auto* heap = g_memory->LookupHeap(address);
+  rex::memory::HeapAllocationInfo info{};
+  return heap && heap->QueryRegionInfo(address & ~0xFFFu, &info) &&
+         (info.state & rex::memory::kMemoryAllocationCommit);
+}
+
+uint32_t Load32(uint32_t address) {
+  uint32_t raw;
+  std::memcpy(&raw, g_base + address, sizeof(raw));
+  return std::byteswap(raw);
+}
+
+void Store32(uint32_t address, uint32_t value) {
+  const uint32_t raw = std::byteswap(value);
+  std::memcpy(g_base + address, &raw, sizeof(raw));
+}
+
+// The text at a guest address, or false when it is not a reasonable string.
+bool ReadText(uint32_t address, std::string* out) {
+  if (!ValidGuest(address)) return false;
+  const char* p = reinterpret_cast<const char*>(g_base + address);
+  const void* end = std::memchr(p, 0, kMaxText);
+  if (!end) return false;
+  out->assign(p, static_cast<const char*>(end));
+  return true;
+}
+
+bool HasButtonTag(std::string_view text) {
+  for (size_t open = text.find('<'); open != std::string_view::npos;
+       open = text.find('<', open + 1)) {
+    const size_t close = text.find('>', open);
+    if (close == std::string_view::npos) return false;
+    if (keyboard_prompts::IsButtonTag(text.substr(open, close - open + 1))) return true;
+  }
+  return false;
+}
+
+std::string Keybind(std::string_view cvar) { return rex::cvar::GetFlagByName(cvar); }
+
+bool ControllerConnected() {
+  for (int i = 0; i < 4; ++i) {
+    bool connected = false;
+    ReadPadRawAt(i, &connected);
+    if (connected) return true;
+  }
+  return false;
+}
+
+bool KeyboardPromptsWanted() {
+  const std::string mode = REXCVAR_GET(button_prompts);
+  if (mode == "keyboard") return true;
+  if (mode == "controller") return false;
+  return rex::cvar::GetFlagByName("mnk_mode") != "false" && !ControllerConnected();
+}
+
+bool MouseLook() { return rex::cvar::GetFlagByName("mnk_mouse") == "true"; }
+
+// Everything the rewritten text depends on, to notice when it has to be redone.
+std::string CurrentState() {
+  if (!KeyboardPromptsWanted()) return "controller";
+  std::string state = MouseLook() ? "keyboard mouse" : "keyboard";
+  for (const char* cvar :
+       {"keybind_a", "keybind_b", "keybind_x", "keybind_y", "keybind_left_shoulder",
+        "keybind_right_shoulder", "keybind_left_trigger", "keybind_right_trigger",
+        "keybind_start", "keybind_back", "keybind_dpad_up", "keybind_dpad_down",
+        "keybind_dpad_left", "keybind_dpad_right", "keybind_lstick_up", "keybind_lstick_down",
+        "keybind_lstick_left", "keybind_lstick_right", "keybind_rstick_up",
+        "keybind_rstick_down", "keybind_rstick_left", "keybind_rstick_right"}) {
+    state += '|';
+    state += Keybind(cvar);
+  }
+  return state;
+}
+
+// Guest copy of a rewritten text (one per distinct text). Caller holds g_mutex.
+uint32_t CopyFor(const std::string& text) {
+  if (auto it = g_copies.find(text); it != g_copies.end()) return it->second;
+  const uint32_t size = static_cast<uint32_t>(text.size() + 1);
+  const uint32_t address = g_memory->SystemHeapAlloc(size, 4);
+  if (!address) return 0;
+  std::memcpy(g_base + address, text.c_str(), size);
+  g_copies.emplace(text, address);
+  g_copy_addresses.insert(address);
+  return address;
+}
+
+// Points one line at the text for the current state. Caller holds g_mutex.
+void Apply(Line& line, bool keyboard, bool mouse_look) {
+  // The line may have been freed with its unit; only touch it while it still shows our pointer.
+  if (!Committed(line.entry) || Load32(line.entry + 4) != line.shown) return;
+  uint32_t target = line.original;
+  if (keyboard) {
+    std::string text, expanded;
+    if (!ReadText(line.original, &text)) return;
+    if (keyboard_prompts::ExpandButtonTags(text, Keybind, mouse_look, &expanded)) {
+      if (const uint32_t copy = CopyFor(expanded)) target = copy;
+      if (REXCVAR_GET(log_button_prompts)) {
+        REXLOG_INFO("[prompts] {:08X}: \"{}\" -> \"{}\"", line.entry, text, expanded);
+      }
+    }
+  }
+  if (target != line.shown) {
+    Store32(line.entry + 4, target);
+    line.shown = target;
+  }
+}
+
+void ApplyAll() {
+  std::lock_guard lock(g_mutex);
+  if (!g_base) return;
+  const std::string state = CurrentState();
+  if (state == g_state) return;
+  g_state = state;
+  const bool keyboard = state != "controller";
+  const bool mouse = MouseLook();
+  // Forget lines whose unit was freed or reused; the rest get the new text.
+  std::erase_if(g_lines, [](const Line& line) {
+    return !Committed(line.entry) || Load32(line.entry + 4) != line.shown;
+  });
+  for (Line& line : g_lines) Apply(line, keyboard, mouse);
+  REXLOG_INFO("[prompts] button prompts: {} ({} lines)", keyboard ? "keyboard" : "controller",
+              g_lines.size());
+}
+
+// Finds the lines with button tags in a freshly loaded text unit.
+void Collect(uint32_t unit) {
+  if (!ValidGuest(unit)) return;
+  const uint32_t slots = Load32(unit);
+  const uint32_t array = Load32(unit + 4);
+  if (slots == 0 || slots > kMaxSlots || !ValidGuest(array)) return;
+  std::lock_guard lock(g_mutex);
+  const bool keyboard = KeyboardPromptsWanted();
+  const bool mouse = MouseLook();
+  size_t found = 0;
+  for (uint32_t i = 0; i < slots; ++i) {
+    uint32_t entry = Load32(array + i * 4);
+    for (uint32_t n = 0; entry && n < kMaxChain; ++n) {
+      if (!ValidGuest(entry)) break;
+      const uint32_t text = Load32(entry + 4);
+      std::string value;
+      if (!g_copy_addresses.contains(text) && ReadText(text, &value) && HasButtonTag(value)) {
+        g_lines.push_back({entry, text, text});
+        Apply(g_lines.back(), keyboard, mouse);
+        ++found;
+      }
+      entry = Load32(entry + 8);
+    }
+  }
+  if (found) {
+    REXLOG_INFO("[prompts] text unit {:08X}: {} lines with button prompts", unit, found);
+  }
+}
+
+// Picks up rebinding, the option itself and controllers being plugged in or out.
+void StartWatcher() {
+  if (g_watcher_started.exchange(true)) return;
+  std::thread([] {
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      ApplyAll();
+    }
+  }).detach();
+}
+
+}  // namespace
+
+REX_HOOK_RAW(sub_8275D500) {
+  __imp__sub_8275D500(ctx, base);
+  const uint32_t unit = ctx.r3.u32;
+  if (!unit) return;
+  if (!g_memory) {
+    auto* ts = rex::runtime::ThreadState::Get();
+    if (!ts) return;
+    g_memory = ts->memory();
+    g_base = base;
+  }
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_state.empty()) g_state = CurrentState();
+  }
+  Collect(unit);
+  StartWatcher();
+}
+
+// Button icons. The interface movies import their button icons from one library,
+// _ExternalGenericIcons.gfx, which the game's file opener (sub_8274C3F0) loads whole into a memory
+// file: buffer at +0x210, size at +0x214, read position at +0x218 (its Read copies from there and
+// its Close frees the buffer). With keyboard prompts on, the buffer is swapped for a rewritten
+// library where each still button icon is a keycap with the bound key. The library is loaded once
+// when the game starts, so the icons follow the bindings and the option as they were then.
+namespace {
+
+constexpr uint32_t kFileBuffer = 0x210, kFileSize = 0x214, kFilePosition = 0x218;
+constexpr int kLabelFontResource = 105;  // Titan One, the PC Options menu font
+
+bool EndsWithNoCase(std::string_view text, std::string_view suffix) {
+  if (text.size() < suffix.size()) return false;
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(text[text.size() - suffix.size() + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ReplaceIconLibrary(PPCContext& ctx, uint8_t* base, uint32_t file) {
+  g_base = base;
+  const uint32_t data = Load32(file + kFileBuffer);
+  const uint32_t size = Load32(file + kFileSize);
+  if (!ValidGuest(data) || size < 8 || size > (16u << 20)) {
+    REXLOG_WARN("[prompts] icon library: unexpected file buffer {:08X} ({} bytes)", data, size);
+    return;
+  }
+  const void* font = nullptr;
+  size_t font_size = 0;
+  if (!ReadResource(kLabelFontResource, &font, &font_size)) {
+    REXLOG_WARN("[prompts] icon library: the label font is missing");
+    return;
+  }
+  const bool mouse = MouseLook();
+  const icon_library::Result result = icon_library::RewriteIconLibrary(
+      g_base + data, size,
+      [mouse](std::string_view icon) { return keyboard_prompts::IconLabel(icon, Keybind, mouse); },
+      static_cast<const uint8_t*>(font), font_size);
+  if (result.movie.empty()) {
+    REXLOG_WARN("[prompts] icon library kept as it is: {}", result.error);
+    return;
+  }
+  // The new buffer comes from the game's own allocator, so the file's Close frees it as usual.
+  const PPCContext saved = ctx;
+  ctx.r3.u64 = result.movie.size();
+  ctx.r4.u64 = 0;
+  __imp__sub_82120040(ctx, base);
+  const uint32_t copy = ctx.r3.u32;
+  ctx = saved;
+  if (!ValidGuest(copy)) {
+    REXLOG_WARN("[prompts] icon library: cannot allocate {} bytes", result.movie.size());
+    return;
+  }
+  std::memcpy(g_base + copy, result.movie.data(), result.movie.size());
+  Store32(file + kFileBuffer, copy);
+  Store32(file + kFileSize, static_cast<uint32_t>(result.movie.size()));
+  Store32(file + kFilePosition, 0);
+  ctx.r3.u64 = data;
+  __imp__sub_82120A70(ctx, base);
+  ctx = saved;
+  REXLOG_INFO("[prompts] icon library: {} button icons show keys ({} -> {} bytes)", result.icons,
+              size, result.movie.size());
+}
+
+}  // namespace
+
+REX_HOOK_RAW(sub_8274C3F0) {
+  std::string url;
+  if (ctx.r4.u32) {
+    const char* p = reinterpret_cast<const char*>(base + ctx.r4.u32);
+    url.assign(p, strnlen(p, 260));
+  }
+  __imp__sub_8274C3F0(ctx, base);
+  const uint32_t file = ctx.r3.u32;
+  if (!file || !EndsWithNoCase(url, "_ExternalGenericIcons.gfx")) return;
+  if (!KeyboardPromptsWanted()) {
+    REXLOG_INFO("[prompts] icon library: controller icons");
+    return;
+  }
+  const PPCContext saved = ctx;
+  ReplaceIconLibrary(ctx, base, file);
+  ctx = saved;
+}
