@@ -466,6 +466,14 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         SCALAR_CONSTANT_1
     };
 
+#ifdef NARUTO_RECOMP
+    // NARUTO_RECOMP: the vector and scalar halves of an ALU instruction both
+    // read their sources before either writes (as Xenia translates them). The
+    // vector result is written first here, so a scalar source that is the
+    // vector destination reads a copy taken before the vector write (rPrev).
+    bool scalarReadsVectorDest = false;
+#endif
+
     auto op = [&](size_t operand)
         {
             size_t reg = 0;
@@ -535,6 +543,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             if (select)
             {
                 regFormatted = fmt::format("r{}", reg);
+#ifdef NARUTO_RECOMP
+                if (scalarReadsVectorDest && reg == instr.vectorDest &&
+                    (operand == SCALAR_0 || operand == SCALAR_1 || operand == SCALAR_CONSTANT_1))
+                    regFormatted = "rPrev";
+#endif
             }
             else
             {
@@ -749,6 +762,27 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     uint32_t vectorWriteMask = instr.vectorWriteMask;
     if (instr.exportData)
         vectorWriteMask &= ~instr.scalarWriteMask;
+
+#ifdef NARUTO_RECOMP
+    if (instr.scalarOpcode != AluScalarOpcode::RetainPrev && !instr.exportData && !instr.vectorDestRelative &&
+        vectorWriteMask != 0)
+    {
+        // The register the scalar half reads: src3 (SCALAR_0 / SCALAR_1), or
+        // for the constant forms the register encoded with the opcode.
+        const bool constantForm = instr.scalarOpcode >= AluScalarOpcode::Mulsc0 &&
+                                  instr.scalarOpcode <= AluScalarOpcode::Subsc1;
+        const uint32_t scalarRegister = constantForm
+            ? ((uint32_t(instr.scalarOpcode) & 1) | (instr.src3Select << 1) | (instr.src3Swizzle & 0x3C))
+            : (instr.src3Register & 0x3F);
+        const bool scalarReadsRegister = constantForm || instr.src3Select;
+        if (scalarReadsRegister && scalarRegister == instr.vectorDest)
+        {
+            scalarReadsVectorDest = true;
+            indent();
+            println("rPrev = r{};", instr.vectorDest);
+        }
+    }
+#endif
 
     if (vectorWriteMask != 0)
     {
@@ -1640,6 +1674,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     out += "\tint aL = 0;\n";
     out += "\tbool p0 = false;\n";
     out += "\tfloat ps = 0.0;\n";
+#ifdef NARUTO_RECOMP
+    out += "\tfloat4 rPrev = 0.0;\n";
+#endif
     if (isPixelShader)
     {
 #if defined(UNLEASHED_RECOMP) || defined(NARUTO_RECOMP)
